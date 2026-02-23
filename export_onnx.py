@@ -3,7 +3,7 @@ import os
 from qai_hub_models.models.openai_clip.model import OpenAIClip
 
 # --- Configuration for File Saving ---
-ONNX_DIR = "exported_onnx"
+ONNX_DIR = "exported_onnx_no_bias_sigmoid"
 device = torch.device("cpu") # use CPU to export onnx model to avoid GPU device issues
 # -----------------------------------
 
