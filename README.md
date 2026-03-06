@@ -1,106 +1,131 @@
-# LPCVC 2026 Track 1 - Image-to-Text Retrieval Sample Solution
+# LPCVC 2026 Track 1 — Image-to-Text Retrieval
 
-## For Submissions
+Lightweight evaluation and submission harness for the [2026 LPCVC Track 1](https://lpcv.ai/2026LPCVC/image-text-retrieval/) competition. Built around MobileCLIP models via `open_clip`.
 
-Check out [this repo](https://github.com/lpcvai/25LPCVC_AIHub_Guide) for more details on how to run models on AIHub.
-
-## Overview
-
-This repository contains Python scripts designed to extract, compile, and profile the OpenAI-CLIP's image and text encoders using the `qai_hub` library. It also includes scripts for uploading datasets and running inference with evaluation metrics such as Recall@10.
-
-## **Table of Contents**
-
-1. [Features](#features)
-2. [Requirements](#requirements)
-3. [Installation](#installation)
-4. [Usage](#usage)
-
----
-
-## **Features**
-
-* **Preprocessing Scripts**: Includes resizing and normalization for image inputs, and tokenization for text inputs.
-* Extract CLIP Encoders: Extract image and text encoders from OpenAI-CLIP model and export as ONNX models.
-* **Model Compilation**: Supports compiling the model for a specific target device using QAI Hub.
-* **Model Profiling**: Submit and retrieve profiling results via QAI Hub.
-* **Dataset Upload**: Upload image and text datasets to AI Hub for inference.
-* **Inference & Evaluation**: Run inference on datasets and compute metrics such as Recall@10.
-
----
-
-## **Requirements**
-
-* Python 3.9+
-* Torch and torchvision
-* QAI Hub
-* Required packages listed in `requirements.txt`
-
----
-
-## **Installation**
-
-### **Step 1: Clone the Repository**
-
-```bash
-git clone https://github.com/lpcvai/26LPCVC_Track1_Sample_Solution.git
-cd 26LPCVC_Track1_Sample_Solution
-```
-
-### **Step 2: Install Dependencies**
-
-Ensure you have Python 3.9+ installed. Install the required Python packages:
+## Quick start
 
 ```bash
 pip install -r requirements.txt
 ```
 
----
+Download the [sample dataset](https://drive.google.com/drive/folders/1tTwrehwLtVtMOTjD5beYDC3lcWIfzS5D) and place it at `dataset/` (images + CSVs).
 
-## **Usage**
-
-### **1. Export ONNX Models**
-
-Execute the script to export the encoders as ONNX models:
+Run local validation:
 
 ```bash
-python export_onnx.py
+./scripts/validate.sh
 ```
 
-### **2. Compile and Profile**
+That's it. By default this evaluates `mobileclip_s2` on the LPCVC sample set and prints Recall@1/5/10.
+
+## Validation options
 
 ```bash
-python compile_and_profile.py
+./scripts/validate.sh --model mobileclip2_s4     # try a different model
+./scripts/validate.sh --datasets quick            # sample + sugarcrepe
+./scripts/validate.sh --datasets retrieval        # sample + mscoco + flickr30k
+./scripts/validate.sh --datasets all              # everything
+./scripts/validate.sh --disable-cache             # skip the embedding cache
+./scripts/validate.sh --list-datasets             # show available datasets
 ```
 
-This script will:
+Results are saved as timestamped CSVs in `results/`.
 
-* Upload the ONNX models to AI Hub and submit a compile job.
-* Submit a profiling job with the compiled models.
+### Supported datasets
 
-### **3. Upload Dataset**
+| Key | Type | Source | Description |
+|-----|------|--------|-------------|
+| `sample` | retrieval | local | LPCVC sample set (~56 images) |
+| `mscoco` | retrieval | HuggingFace | MSCOCO Karpathy 5K |
+| `flickr30k` | retrieval | HuggingFace | Flickr30K benchmark |
+| `sugarcrepe` | binary | HuggingFace | Hard-negative compositionality |
 
-Before running inference, datasets must be uploaded to AI Hub using `upload_dataset.py`. This script handles:
+Groups: `quick` = sample + sugarcrepe, `retrieval` = sample + mscoco + flickr30k, `all` = everything.
 
-* Formatting images and text data into the structure expected by QAI Hub. (image: (1,3,224,224), txt: (1,77))
-* Uploading the dataset and returning a dataset ID to be used in inference scripts.
+### Caching
+
+Preprocessed tensors, tokens, and embeddings are cached in `.cache/validate/` by default. This makes repeat runs near-instant. Disable with `--disable-cache`.
+
+## Available models
+
+| Key | Model | Notes |
+|-----|-------|-------|
+| `mobileclip_s1` | MobileCLIP-S1 | v1, fastest |
+| `mobileclip_s2` | MobileCLIP-S2 | v1, current default |
+| `mobileclip_b` | MobileCLIP-B | v1, larger |
+| `mobileclip2_s0` | MobileCLIP2-S0 | v2, smallest |
+| `mobileclip2_s2` | MobileCLIP2-S2 | v2, mid |
+| `mobileclip2_s4` | MobileCLIP2-S4 | v2, strongest |
+
+## QAI Hub submission pipeline
+
+These steps compile and deploy to Qualcomm XR2 Gen 2 via [QAI Hub](https://aihub.qualcomm.com). Requires a QAI Hub account.
+
+### Step by step
 
 ```bash
-python upload_dataset.py
+# 1. Export ONNX (image + text encoders with preprocessing baked in)
+./scripts/export.sh --model mobileclip_s2
+
+# 2. Compile, upload dataset, run inference, score
+./scripts/hub_pipeline.sh
+
+# 3. Share with judges and submit
+./scripts/submit.sh
 ```
 
-This will print a `dataset_id` that you can use in `inference.py`.
-
-### **4. Run Inference and Evaluate**
-
-The `inference.py` script runs the compiled models on the uploaded datasets:
-
-1. Retrieves the compiled image and text encoders from AI Hub.
-2. Runs inference on the uploaded datasets.
-3. Collects output embeddings for images and text.
-4. Computes evaluation metrics, such as **Recall@10**, which measures how often the correct text is among the top-10 retrieved results for each image.
+Or run each stage individually:
 
 ```bash
-python inference.py
+python export_onnx.py --model mobileclip_s2
+
+python compile_and_profile.py \
+  --onnx-dir exported_onnx_mobileclip_s2 \
+  --manifest-out manifests/compile_manifest.json \
+  --skip-profile
+
+python upload_dataset.py \
+  --manifest-out manifests/upload_manifest.json
+
+python inference.py \
+  --compile-manifest manifests/compile_manifest.json \
+  --upload-manifest manifests/upload_manifest.json \
+  --top-k 10 \
+  --manifest-out manifests/inference_manifest.json
 ```
 
-After completion, the script prints the Recall@10 score for the dataset.
+## Project layout
+
+```
+validate.py              # local evaluation harness (main entry point)
+lpcvc_contract.py        # I/O contract: shapes, dtypes, tokenizer
+lpcvc_models.py          # model registry (open_clip names + pretrained tags)
+export_onnx.py           # export to ONNX with baked-in preprocessing
+compile_and_profile.py   # compile ONNX on QAI Hub
+upload_dataset.py        # upload sample data to QAI Hub
+inference.py             # run QAI Hub inference + Recall@K
+utils/retrieval_eval.py  # shared scoring helpers
+scripts/                 # bash wrappers for common workflows
+```
+
+### Generated (gitignored)
+
+```
+exported_onnx_*/         # ONNX model exports
+manifests/               # QAI Hub job manifests
+results/                 # validation CSVs
+.cache/                  # embedding + preprocessing cache
+hf_cache/                # HuggingFace dataset downloads
+dataset/                 # local sample data (download separately)
+```
+
+## Competition contract
+
+| Field | Value |
+|-------|-------|
+| Image input | `float32 (1, 3, 224, 224)` in [0, 1], RGB |
+| Text input | `int32 (1, 77)` — CLIP token IDs |
+| Tokenizer | `openai/clip-vit-base-patch32` |
+| Target device | XR2 Gen 2 (Proxy) |
+| Metric | Recall@Top10 |
+| Latency gate | Image + text encoder < 35 ms combined |

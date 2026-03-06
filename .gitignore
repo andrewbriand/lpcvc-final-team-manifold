@@ -1,3 +1,59 @@
-exported_onnx/
+# ONNX exports (generated)
+exported_onnx_*/
+*.onnx
+*.onnx.data
+
+# Dataset (download separately)
 dataset/
-ids.txt
+
+# QAI Hub manifests and outputs
+manifests/
+quant_model/
+*.h5
+
+# Validation results and cache
+results/
+.cache/
+hf_cache/
+*.npy
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Environment and secrets
+.env
+.env.*
+
+# Virtual environments
+venv/
+.venv/
+
+# IDE and editor
+.cursor/
+.vscode/
+.idea/
+*.swp
+*~
+
+# Agent/team notes and reference docs (not committed)
+AGENTS.md
+docs/
+context/
+
+# Model weights
+*.pt
+*.pth
+*.bin
+*.safetensors
+
+# Logs
+*.log
+
+# macOS
+.DS_Store
+._*
