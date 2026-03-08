@@ -32,6 +32,7 @@ DATASETS: dict[str, tuple[str, str, str]] = {
     "mscoco": ("retrieval", "hf", "MSCOCO Karpathy 5K retrieval"),
     "flickr30k": ("retrieval", "hf", "Flickr30K retrieval benchmark"),
     "sugarcrepe": ("binary", "hf", "SugarCrepe hard-negative benchmark"),
+    "sugarcrepe_pp_swap_att": ("itt", "hf", "SugarCrepe++ ITT benchmark swap_atribute"),
 }
 
 GROUPS: dict[str, list[str]] = {
@@ -195,6 +196,29 @@ def load_sugarcrepe(cache_dir: str):
         pos_caps.append(pos)
         neg_caps.append(neg)
     return images, pos_caps, neg_caps
+
+def load_sugarcrepe_pp(cache_dir: str, subset):
+    from datasets import load_dataset
+
+    ds = load_dataset("Aman-J/SugarCrepe_pp", subset, split="train", cache_dir=cache_dir)
+    ds_ms_coco = load_dataset("lmms-lab/COCO-Caption2017", split="val", cache_dir=cache_dir)
+    img_name_to_image = {}
+    for ex in ds_ms_coco:
+      img_name_to_image[ex.get("question_id")] = ex.get("image")
+    images, pos_caps, pos_caps2, neg_caps = [], [], [], []
+    for ex in tqdm(ds, desc="  sugarcrepe", leave=False):
+        img_filename = ex.get("filename")
+        img = img_name_to_image[img_filename]
+        pos = ex.get("caption") or ""
+        pos2 = ex.get("caption2") or ""
+        neg = ex.get("negative_caption") or ""
+        if img_filename is None or img is None or not pos or not neg or not pos2:
+            continue
+        images.append(img.convert("RGB"))
+        pos_caps.append(pos)
+        pos_caps2.append(pos2)
+        neg_caps.append(neg)
+    return images, pos_caps, pos_caps2, neg_caps
 
 
 def resolve_datasets(raw: str) -> list[str]:
@@ -409,18 +433,27 @@ def recall_at_k(image_embeddings: np.ndarray, text_embeddings: np.ndarray, img2t
     sim = image_embeddings @ text_embeddings.T
     out: dict[str, float] = {}
     for k in ks:
-        hits = 0
+        score = 0.0
         for i, gt_indices in enumerate(img2txt):
+            hits = 0
             topk = np.argsort(-sim[i])[:k]
-            if any(gt in topk for gt in gt_indices):
-                hits += 1
-        out[f"R@{k}"] = hits / max(len(img2txt), 1)
+            for gt in gt_indices:
+                if gt in topk:
+                    hits += 1
+            score += hits / len(gt_indices)
+        out[f"R@{k}"] = score / max(len(img2txt), 1)
     return out
 
 
 def binary_accuracy(img_embs: np.ndarray, pos_embs: np.ndarray, neg_embs: np.ndarray):
     wins = np.einsum("ij,ij->i", img_embs, pos_embs) > np.einsum("ij,ij->i", img_embs, neg_embs)
     return {"accuracy": float(wins.mean())}
+
+def itt_accuracy(img_embs: np.ndarray, pos_embs: np.ndarray, pos_embs2: np.ndarray, neg_embs: np.ndarray):  
+    wins = np.einsum("ij,ij->i", img_embs, pos_embs) > np.einsum("ij,ij->i", img_embs, neg_embs)
+    wins2 = np.einsum("ij,ij->i", img_embs, pos_embs2) > np.einsum("ij,ij->i", img_embs, neg_embs)
+    wins_final = np.logical_and(wins, wins2)
+    return {"accuracy": float(wins_final.mean())}
 
 
 def eval_retrieval(model, preprocess, tokenizer, payload, device, batch_size, cache):
@@ -439,6 +472,16 @@ def eval_binary(model, preprocess, tokenizer, payload, device, batch_size, cache
     cap_embs, txt_ms = embed_texts(model, tokenizer, pos_caps + neg_caps, device, batch_size, cache)
     n = len(pos_caps)
     scores = binary_accuracy(img_embs, cap_embs[:n], cap_embs[n:])
+    scores["img_ms"] = img_ms
+    scores["txt_ms"] = txt_ms
+    return scores
+
+def eval_itt(model, preprocess, tokenizer, payload, device, batch_size, cache):
+    images, pos_caps, pos_caps2, neg_caps = payload
+    img_embs, img_ms = embed_images(model, preprocess, images, device, batch_size, cache)
+    cap_embs, txt_ms = embed_texts(model, tokenizer, pos_caps + pos_caps2 + neg_caps, device, batch_size, cache)
+    n = len(pos_caps)
+    scores = itt_accuracy(img_embs, cap_embs[:n], cap_embs[n:2*n], cap_embs[2*n:])
     scores["img_ms"] = img_ms
     scores["txt_ms"] = txt_ms
     return scores
@@ -514,6 +557,8 @@ def main() -> None:
                 payload = load_flickr30k(args.hf_cache_dir)
             elif key == "sugarcrepe":
                 payload = load_sugarcrepe(args.hf_cache_dir)
+            elif key == "sugarcrepe_pp_swap_att":
+                payload = load_sugarcrepe_pp(args.hf_cache_dir, "swap_atribute")
             else:
                 raise RuntimeError(f"Unhandled dataset: {key}")
 
@@ -521,6 +566,8 @@ def main() -> None:
                 scores = eval_retrieval(model, preprocess, tokenizer, payload, device, args.batch_size, cache)
             elif dtype == "binary":
                 scores = eval_binary(model, preprocess, tokenizer, payload, device, args.batch_size, cache)
+            elif dtype == "itt":
+                scores = eval_itt(model, preprocess, tokenizer, payload, device, args.batch_size, cache)
             else:
                 raise RuntimeError(f"Unhandled task type: {dtype}")
 
