@@ -33,6 +33,10 @@ DATASETS: dict[str, tuple[str, str, str]] = {
     "flickr30k": ("retrieval", "hf", "Flickr30K retrieval benchmark"),
     "sugarcrepe": ("binary", "hf", "SugarCrepe hard-negative benchmark"),
     "sugarcrepe_pp_swap_att": ("itt", "hf", "SugarCrepe++ ITT benchmark swap_atribute"),
+    "sugarcrepe_pp_replace_attribute": ("itt", "hf", "SugarCrepe++ ITT benchmark replace_attribute"),
+    "sugarcrepe_pp_replace_object": ("itt", "hf", "SugarCrepe++ ITT benchmark replace_object"),
+    "sugarcrepe_pp_replace_relation": ("itt", "hf", "SugarCrepe++ ITT benchmark replace_relation"),
+    "sugarcrepe_pp_swap_object": ("itt", "hf", "SugarCrepe++ ITT benchmark swap_object"),
 }
 
 GROUPS: dict[str, list[str]] = {
@@ -559,6 +563,14 @@ def main() -> None:
                 payload = load_sugarcrepe(args.hf_cache_dir)
             elif key == "sugarcrepe_pp_swap_att":
                 payload = load_sugarcrepe_pp(args.hf_cache_dir, "swap_atribute")
+            elif key == "sugarcrepe_pp_replace_attribute":
+                payload = load_sugarcrepe_pp(args.hf_cache_dir, "replace_attribute")
+            elif key == "sugarcrepe_pp_replace_object":
+                payload = load_sugarcrepe_pp(args.hf_cache_dir, "replace_object")
+            elif key == "sugarcrepe_pp_replace_relation":
+                payload = load_sugarcrepe_pp(args.hf_cache_dir, "replace_relation")
+            elif key == "sugarcrepe_pp_swap_object":
+                payload = load_sugarcrepe_pp(args.hf_cache_dir, "swap_object")
             else:
                 raise RuntimeError(f"Unhandled dataset: {key}")
 
