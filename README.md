@@ -16,7 +16,8 @@ Run local validation:
 ./scripts/validate.sh
 ```
 
-That's it. By default this evaluates `mobileclip_s2` on the LPCVC sample set and prints Recall@1/5/10.
+That's it. By default this evaluates `mobileclip2_s2` on the LPCVC sample set and prints Recall@1/5/10.
+For retrieval datasets, this harness reports fractional multi-ground-truth recall so local validation stays closer to the LPCVC competition scorer.
 
 ## Validation options
 
@@ -29,7 +30,14 @@ That's it. By default this evaluates `mobileclip_s2` on the LPCVC sample set and
 ./scripts/validate.sh --list-datasets             # show available datasets
 ```
 
-Results are saved as timestamped CSVs in `results/`.
+Results are saved as timestamped CSVs in `results/`. To generate comparison charts:
+
+```bash
+./scripts/visualize.sh                       # auto-discover all result CSVs
+./scripts/visualize.sh results/vit_b16_all.csv results/mobileclip2_b_all.csv  # specific files
+```
+
+Charts are saved to `results/charts/` (Recall@1, Recall@10, SugarCrepe accuracy, latency, radar).
 
 ### Supported datasets
 
@@ -51,11 +59,21 @@ Preprocessed tensors, tokens, and embeddings are cached in `.cache/validate/` by
 | Key | Model | Notes |
 |-----|-------|-------|
 | `mobileclip_s1` | MobileCLIP-S1 | v1, fastest |
-| `mobileclip_s2` | MobileCLIP-S2 | v1, current default |
+| `mobileclip_s2` | MobileCLIP-S2 | v1 baseline |
 | `mobileclip_b` | MobileCLIP-B | v1, larger |
 | `mobileclip2_s0` | MobileCLIP2-S0 | v2, smallest |
-| `mobileclip2_s2` | MobileCLIP2-S2 | v2, mid |
+| `mobileclip2_s2` | MobileCLIP2-S2 | v2, current submission default |
+| `mobileclip2_s3` | MobileCLIP2-S3 | v2, ~70M |
 | `mobileclip2_s4` | MobileCLIP2-S4 | v2, strongest |
+| `mobileclip2_b` | MobileCLIP2-B | v2, ~110M |
+| `mobileclip2_l14` | MobileCLIP2-L-14 | v2, largest |
+| `vit_b16` | ViT-B/16 | OpenAI CLIP baseline |
+| `vit_l14` | ViT-L/14 | OpenAI CLIP large baseline |
+| `tripletclip_cc12m` | TripletCLIP | ViT-B/32 on CC12M (HF) |
+| `siglip2_base_224` | SigLIP2 Base | Google SigLIP2 patch16 224 (HF) |
+| `siglip2_giant_256` | SigLIP2 Giant 1B | Google SigLIP2 giant patch16 256 (HF) |
+
+SigLIP2 runs are supported in the local validation harness. They use the model-native Gemma tokenizer with `max_length=64`, so they are useful for comparison experiments but are not drop-in compatible with the LPCVC submission contract in `lpcvc_contract.py`.
 
 ## QAI Hub submission pipeline
 
@@ -65,7 +83,7 @@ These steps compile and deploy to Qualcomm XR2 Gen 2 via [QAI Hub](https://aihub
 
 ```bash
 # 1. Export ONNX (image + text encoders with preprocessing baked in)
-./scripts/export.sh --model mobileclip_s2
+./scripts/export.sh --model mobileclip2_s2
 
 # 2. Compile, upload dataset, run inference, score
 ./scripts/hub_pipeline.sh
@@ -77,10 +95,10 @@ These steps compile and deploy to Qualcomm XR2 Gen 2 via [QAI Hub](https://aihub
 Or run each stage individually:
 
 ```bash
-python export_onnx.py --model mobileclip_s2
+python export_onnx.py --model mobileclip2_s2
 
 python compile_and_profile.py \
-  --onnx-dir exported_onnx_mobileclip_s2 \
+  --onnx-dir exported_onnx_mobileclip2_s2 \
   --manifest-out manifests/compile_manifest.json \
   --skip-profile
 
@@ -98,6 +116,7 @@ python inference.py \
 
 ```
 validate.py              # local evaluation harness (main entry point)
+visualize_results.py     # generate comparison charts from result CSVs
 lpcvc_contract.py        # I/O contract: shapes, dtypes, tokenizer
 lpcvc_models.py          # model registry (open_clip names + pretrained tags)
 export_onnx.py           # export to ONNX with baked-in preprocessing

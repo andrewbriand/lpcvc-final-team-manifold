@@ -13,16 +13,13 @@ from datetime import datetime
 import numpy as np
 import qai_hub
 from PIL import Image
-from transformers import CLIPTokenizer
+from transformers import AutoTokenizer
 
 from lpcvc_contract import (
-    CONTRACT_VERSION,
     IMAGE_HEIGHT,
     IMAGE_WIDTH,
-    TEXT_DTYPE,
-    TEXT_SEQ_LEN,
-    TOKENIZER_ID,
 )
+from lpcvc_models import DEFAULT_MODEL, MODELS, build_pipeline_spec, pipeline_spec_to_dict
 
 
 def process_image(image_path: str, target_size: tuple[int, int]) -> np.ndarray:
@@ -58,7 +55,11 @@ def load_images_by_csv_order(img_csv: str, img_dir: str, target_size: tuple[int,
     return tensors, paths
 
 
-def load_tokenized_prompts(txt_csv: str) -> tuple[list[np.ndarray], list[int], list[str]]:
+def load_tokenized_prompts(
+    txt_csv: str,
+    tokenizer_id: str,
+    max_length: int,
+) -> tuple[list[np.ndarray], list[int], list[str]]:
     rows = read_csv_body(txt_csv)
     text_ids: list[int] = []
     prompts: list[str] = []
@@ -79,12 +80,12 @@ def load_tokenized_prompts(txt_csv: str) -> tuple[list[np.ndarray], list[int], l
     if not prompts:
         return [], [], []
 
-    tokenizer = CLIPTokenizer.from_pretrained(TOKENIZER_ID)
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_id)
     token_matrix = tokenizer(
         prompts,
         padding="max_length",
         truncation=True,
-        max_length=TEXT_SEQ_LEN,
+        max_length=max_length,
         return_tensors="np",
     )["input_ids"].astype(np.int32)
     tokens = [row[np.newaxis, :] for row in token_matrix]
@@ -93,6 +94,7 @@ def load_tokenized_prompts(txt_csv: str) -> tuple[list[np.ndarray], list[int], l
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Upload LPCVC sample datasets to QAI Hub.")
+    parser.add_argument("--model", default=DEFAULT_MODEL, choices=list(MODELS.keys()))
     parser.add_argument("--img-dir", default="dataset/images")
     parser.add_argument("--img-csv", default="dataset/img_list.csv")
     parser.add_argument("--txt-csv", default="dataset/txt_list.csv")
@@ -103,13 +105,18 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    pipeline = build_pipeline_spec(args.model)
 
     image_tensors, image_paths = load_images_by_csv_order(
         img_csv=args.img_csv,
         img_dir=args.img_dir,
         target_size=(IMAGE_WIDTH, IMAGE_HEIGHT),
     )
-    text_tensors, text_ids, prompts = load_tokenized_prompts(args.txt_csv)
+    text_tensors, text_ids, prompts = load_tokenized_prompts(
+        args.txt_csv,
+        tokenizer_id=pipeline.tokenizer_id,
+        max_length=pipeline.text_shape[1],
+    )
 
     if not image_tensors:
         raise RuntimeError("No images loaded from img CSV.")
@@ -133,12 +140,17 @@ def main() -> None:
 
     manifest = {
         "created_at": datetime.now().isoformat(timespec="seconds"),
-        "contract_version": CONTRACT_VERSION,
+        "contract_version": pipeline.submission_contract_version,
+        "pipeline_version": pipeline.version,
+        "model_key": args.model,
+        "pipeline": pipeline_spec_to_dict(pipeline),
         "contract": {
-            "image_shape": [1, 3, IMAGE_HEIGHT, IMAGE_WIDTH],
-            "text_shape": [1, TEXT_SEQ_LEN],
-            "text_dtype": TEXT_DTYPE,
-            "tokenizer_id": TOKENIZER_ID,
+            "image_shape": list(pipeline.image_shape),
+            "image_dtype": pipeline.image_dtype,
+            "text_shape": list(pipeline.text_shape),
+            "text_dtype": pipeline.upload_text_dtype,
+            "compile_text_dtype": pipeline.compile_text_dtype,
+            "tokenizer_id": pipeline.tokenizer_id,
         },
         "inputs": {
             "img_dir": args.img_dir,

@@ -11,7 +11,7 @@ from datetime import datetime
 
 import qai_hub
 
-from lpcvc_contract import CONTRACT_VERSION, QAI_DEVICE, get_contract_spec
+from lpcvc_contract import QAI_DEVICE
 from utils.retrieval_eval import evaluate_track1_embeddings, stack_embeddings
 
 
@@ -22,38 +22,79 @@ def load_json(path: str, label: str) -> dict:
         return json.load(f)
 
 
-def preflight_contract(compile_manifest: dict, upload_manifest: dict) -> None:
-    spec = get_contract_spec()
-    expected_image_shape = list(spec.image_shape)
-    expected_text_shape = list(spec.text_shape)
-    expected_text_dtype = spec.text_dtype
-
+def resolve_compile_pipeline(compile_manifest: dict) -> dict:
+    pipeline = compile_manifest.get("pipeline")
+    if pipeline:
+        return pipeline
     compile_image = compile_manifest.get("compile", {}).get("input_specs", {}).get("image")
     compile_text = compile_manifest.get("compile", {}).get("input_specs", {}).get("text", {})
-    if list(compile_image or []) != expected_image_shape:
-        raise ValueError(f"Compile manifest image shape mismatch: {compile_image} != {expected_image_shape}")
-    if list(compile_text.get("shape") or []) != expected_text_shape:
-        raise ValueError(f"Compile manifest text shape mismatch: {compile_text.get('shape')} != {expected_text_shape}")
-    if str(compile_text.get("dtype", "")).lower() != expected_text_dtype:
-        raise ValueError(f"Compile manifest text dtype mismatch: {compile_text.get('dtype')} != {expected_text_dtype}")
+    return {
+        "version": compile_manifest.get("pipeline_version"),
+        "model_key": compile_manifest.get("model_key"),
+        "submission_contract_version": compile_manifest.get("contract_version"),
+        "image_shape": list(compile_image or []),
+        "text_shape": list(compile_text.get("shape") or []),
+        "compile_text_dtype": str(compile_text.get("dtype") or ""),
+    }
 
+
+def resolve_upload_pipeline(upload_manifest: dict) -> dict:
+    pipeline = upload_manifest.get("pipeline")
+    if pipeline:
+        return pipeline
     upload_contract = upload_manifest.get("contract", {})
-    upload_image = upload_contract.get("image_shape")
-    upload_text = upload_contract.get("text_shape")
-    upload_dtype = upload_contract.get("text_dtype")
-    if list(upload_image or []) != expected_image_shape:
-        raise ValueError(f"Upload manifest image shape mismatch: {upload_image} != {expected_image_shape}")
-    if list(upload_text or []) != expected_text_shape:
-        raise ValueError(f"Upload manifest text shape mismatch: {upload_text} != {expected_text_shape}")
-    if str(upload_dtype or "").lower() != expected_text_dtype:
-        raise ValueError(f"Upload manifest text dtype mismatch: {upload_dtype} != {expected_text_dtype}")
+    return {
+        "version": upload_manifest.get("pipeline_version"),
+        "model_key": upload_manifest.get("model_key"),
+        "submission_contract_version": upload_manifest.get("contract_version"),
+        "image_shape": list(upload_contract.get("image_shape") or []),
+        "text_shape": list(upload_contract.get("text_shape") or []),
+        "upload_text_dtype": str(upload_contract.get("text_dtype") or ""),
+        "compile_text_dtype": str(upload_contract.get("compile_text_dtype") or ""),
+        "tokenizer_id": upload_contract.get("tokenizer_id"),
+    }
 
-    compile_version = compile_manifest.get("contract_version")
-    upload_version = upload_manifest.get("contract_version")
-    if compile_version and compile_version != CONTRACT_VERSION:
-        raise ValueError(f"Compile manifest contract version mismatch: {compile_version} != {CONTRACT_VERSION}")
-    if upload_version and upload_version != CONTRACT_VERSION:
-        raise ValueError(f"Upload manifest contract version mismatch: {upload_version} != {CONTRACT_VERSION}")
+
+def preflight_pipeline(compile_manifest: dict, upload_manifest: dict) -> dict:
+    compile_pipeline = resolve_compile_pipeline(compile_manifest)
+    upload_pipeline = resolve_upload_pipeline(upload_manifest)
+
+    if list(compile_pipeline.get("image_shape") or []) != list(upload_pipeline.get("image_shape") or []):
+        raise ValueError(
+            f"Image shape mismatch between compile and upload manifests: "
+            f"{compile_pipeline.get('image_shape')} != {upload_pipeline.get('image_shape')}"
+        )
+    if list(compile_pipeline.get("text_shape") or []) != list(upload_pipeline.get("text_shape") or []):
+        raise ValueError(
+            f"Text shape mismatch between compile and upload manifests: "
+            f"{compile_pipeline.get('text_shape')} != {upload_pipeline.get('text_shape')}"
+        )
+
+    compile_model = compile_manifest.get("model_key")
+    upload_model = upload_manifest.get("model_key")
+    if compile_model and upload_model and compile_model != upload_model:
+        raise ValueError(f"Model mismatch between compile and upload manifests: {compile_model} != {upload_model}")
+
+    compile_pipeline_version = compile_manifest.get("pipeline_version")
+    upload_pipeline_version = upload_manifest.get("pipeline_version")
+    if compile_pipeline_version and upload_pipeline_version and compile_pipeline_version != upload_pipeline_version:
+        raise ValueError(
+            f"Pipeline version mismatch between compile and upload manifests: "
+            f"{compile_pipeline_version} != {upload_pipeline_version}"
+        )
+
+    compile_contract = compile_manifest.get("contract_version")
+    upload_contract = upload_manifest.get("contract_version")
+    if compile_contract and upload_contract and compile_contract != upload_contract:
+        raise ValueError(
+            f"Submission contract mismatch between compile and upload manifests: "
+            f"{compile_contract} != {upload_contract}"
+        )
+
+    return {
+        "compile": compile_pipeline,
+        "upload": upload_pipeline,
+    }
 
 
 def resolve_ids(compile_manifest: dict, upload_manifest: dict) -> tuple[str, str, str, str]:
@@ -126,7 +167,7 @@ def main() -> None:
 
     compile_manifest = load_json(args.compile_manifest, "Compile")
     upload_manifest = load_json(args.upload_manifest, "Upload")
-    preflight_contract(compile_manifest, upload_manifest)
+    pipeline = preflight_pipeline(compile_manifest, upload_manifest)
     image_compiled_id, text_compiled_id, image_dataset_id, text_dataset_id = resolve_ids(
         compile_manifest,
         upload_manifest,
@@ -161,7 +202,10 @@ def main() -> None:
 
     run_manifest = {
         "created_at": datetime.now().isoformat(timespec="seconds"),
-        "contract_version": CONTRACT_VERSION,
+        "contract_version": compile_manifest.get("contract_version"),
+        "pipeline_version": compile_manifest.get("pipeline_version"),
+        "model_key": compile_manifest.get("model_key"),
+        "pipeline": pipeline,
         "device": device.name,
         "inputs": {
             "compile_manifest": args.compile_manifest,

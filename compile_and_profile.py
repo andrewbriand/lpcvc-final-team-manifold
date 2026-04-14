@@ -12,14 +12,14 @@ from datetime import datetime
 import onnx
 import qai_hub
 
-from lpcvc_contract import COMPILE_OPTIONS, CONTRACT_VERSION, QAI_DEVICE, compile_input_specs
+from lpcvc_contract import COMPILE_OPTIONS, QAI_DEVICE
 
 PROFILE_OPTIONS = "--max_profiler_iterations 100"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compile LPCVC ONNX encoders on QAI Hub.")
-    parser.add_argument("--onnx-dir", default="exported_onnx_mobileclip_s2")
+    parser.add_argument("--onnx-dir", default="exported_onnx_mobileclip2_s2")
     parser.add_argument("--device", default=QAI_DEVICE)
     parser.add_argument("--manifest-out", default="manifests/compile_manifest.json")
     parser.add_argument("--skip-profile", action="store_true")
@@ -28,9 +28,29 @@ def parse_args() -> argparse.Namespace:
 
 def load_checked_onnx(path: str, label: str):
     print(f"Loading {label} ONNX: {path}")
-    model = onnx.load(path, load_external_data=True)
-    onnx.checker.check_model(model)
-    return model
+    onnx.checker.check_model(path)
+    return onnx.load(path, load_external_data=True)
+
+
+def load_export_manifest(onnx_dir: str) -> dict:
+    manifest_path = os.path.join(onnx_dir, "export_manifest.json")
+    if not os.path.exists(manifest_path):
+        raise FileNotFoundError(f"Missing export manifest: {manifest_path}")
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def resolve_compile_specs(export_manifest: dict) -> tuple[dict, dict]:
+    pipeline = export_manifest.get("pipeline")
+    if not pipeline:
+        raise ValueError("Export manifest is missing the pipeline specification.")
+    image_shape = tuple(pipeline["image_shape"])
+    text_shape = tuple(pipeline["text_shape"])
+    text_dtype = str(pipeline["compile_text_dtype"])
+    return (
+        {"image": image_shape, "text": (text_shape, text_dtype)},
+        pipeline,
+    )
 
 
 def main() -> None:
@@ -45,7 +65,8 @@ def main() -> None:
 
     image_model = load_checked_onnx(image_onnx_path, "image")
     text_model = load_checked_onnx(text_onnx_path, "text")
-    compile_specs = compile_input_specs()
+    export_manifest = load_export_manifest(args.onnx_dir)
+    compile_specs, pipeline = resolve_compile_specs(export_manifest)
 
     device = qai_hub.Device(args.device)
     print(f"Submitting compile jobs on device: {device.name}")
@@ -67,7 +88,10 @@ def main() -> None:
 
     manifest = {
         "created_at": datetime.now().isoformat(timespec="seconds"),
-        "contract_version": CONTRACT_VERSION,
+        "contract_version": export_manifest.get("contract_version"),
+        "pipeline_version": export_manifest.get("pipeline_version"),
+        "model_key": export_manifest.get("model_key"),
+        "pipeline": pipeline,
         "compile": {
             "device": device.name,
             "compile_options": COMPILE_OPTIONS,

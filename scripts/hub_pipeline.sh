@@ -4,7 +4,7 @@
 # Requires a QAI Hub account and the qai_hub package.
 #
 # Usage:
-#   ./scripts/hub_pipeline.sh                              # defaults
+#   ./scripts/hub_pipeline.sh                              # defaults to mobileclip2_s2
 #   ./scripts/hub_pipeline.sh --onnx-dir exported_onnx_mobileclip2_s4
 
 set -euo pipefail
@@ -16,10 +16,26 @@ if [[ -z "${PYTHON}" ]]; then
   exit 1
 fi
 
-ONNX_DIR="${1:-exported_onnx_mobileclip_s2}"
+ONNX_DIR="${1:-exported_onnx_mobileclip2_s2}"
 COMPILE_MANIFEST="manifests/compile_manifest.json"
 UPLOAD_MANIFEST="manifests/upload_manifest.json"
 INFERENCE_MANIFEST="manifests/inference_manifest.json"
+MODEL="$("${PYTHON}" - "${ONNX_DIR}" <<'PY'
+import json
+import os
+import sys
+
+manifest_path = os.path.join(sys.argv[1], "export_manifest.json")
+if not os.path.exists(manifest_path):
+    print("mobileclip2_s2")
+    raise SystemExit(0)
+
+with open(manifest_path, "r", encoding="utf-8") as f:
+    manifest = json.load(f)
+
+print(manifest.get("model_key", "mobileclip2_s2"))
+PY
+)"
 
 echo "=== Step 1/3: Compile ==="
 "${PYTHON}" compile_and_profile.py \
@@ -30,6 +46,7 @@ echo "=== Step 1/3: Compile ==="
 echo ""
 echo "=== Step 2/3: Upload dataset ==="
 "${PYTHON}" upload_dataset.py \
+  --model "${MODEL}" \
   --manifest-out "${UPLOAD_MANIFEST}"
 
 echo ""

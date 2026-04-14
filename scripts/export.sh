@@ -3,7 +3,7 @@
 # Export ONNX models from an open_clip checkpoint.
 #
 # Usage:
-#   ./scripts/export.sh                          # default: mobileclip_s2
+#   ./scripts/export.sh                          # default: mobileclip2_s2
 #   ./scripts/export.sh --model mobileclip2_s4   # different model
 
 set -euo pipefail

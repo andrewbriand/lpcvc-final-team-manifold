@@ -19,9 +19,10 @@ IMAGE_CHANNELS = 3
 IMAGE_DTYPE = "float32"
 
 TEXT_SEQ_LEN = 77
-# Competition spec: text input is int32 (1×77).
-# The ONNX model accepts int32 and casts to int64 internally before embedding lookup.
+# Competition/runtime boundary: text input is int32 (1x77).
 TEXT_DTYPE = "int32"
+# ONNX export / compile-time model input is int64.
+ONNX_TEXT_DTYPE = "int64"
 
 # Target device as specified in COMPETITION.md
 QAI_DEVICE = "XR2 Gen 2 (Proxy)"
@@ -46,5 +47,5 @@ def compile_input_specs() -> dict:
     spec = get_contract_spec()
     return {
         "image": spec.image_shape,
-        "text": (spec.text_shape, spec.text_dtype),
+        "text": (spec.text_shape, ONNX_TEXT_DTYPE),
     }
