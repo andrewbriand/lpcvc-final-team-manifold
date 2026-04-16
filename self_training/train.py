@@ -266,15 +266,6 @@ def train(config: SelfTrainConfig) -> None:
 
                 pseudo_emb = caption_embs[pp_idx]
                 pseudo_caption = captions[pp_idx]
-                pseudo_embs_list.append(pseudo_emb)
-
-                # Original caption embedding
-                src_idx = sub_source_indices[i]
-                if src_idx >= 0:
-                    original_embs_list.append(caption_embs[src_idx])
-                else:
-                    # Fall back to pseudo-positive if no original caption
-                    original_embs_list.append(pseudo_emb)
 
                 # --- f) Hard-negative filtering ---
                 # Candidates = ranks 2..K from retrieval
@@ -300,6 +291,16 @@ def train(config: SelfTrainConfig) -> None:
                 if len(filtered) < config.min_hard_negatives:
                     valid_mask.append(False)
                     continue
+
+                # All filters passed — now append to lists
+                pseudo_embs_list.append(pseudo_emb)
+
+                # Original caption embedding
+                src_idx = sub_source_indices[i]
+                if src_idx >= 0:
+                    original_embs_list.append(caption_embs[src_idx])
+                else:
+                    original_embs_list.append(pseudo_emb)
 
                 neg_embs = np.stack([f[1] for f in filtered[:config.min_hard_negatives]])
                 hard_neg_embs_list.append(neg_embs)
