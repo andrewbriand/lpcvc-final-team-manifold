@@ -12,3 +12,7 @@ qai_hub
 onnx
 datasets
 huggingface_hub
+
+# Self-training pipeline
+faiss-cpu
+webdataset
