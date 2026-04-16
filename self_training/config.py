@@ -27,15 +27,16 @@ class SelfTrainConfig:
     # Confidence filter (calibrated offline)
     min_top1_cosine: float = 0.25
     min_margin: float = 0.02
+    use_margin_filter: bool = False  # single-threshold preferred (SPF 2025)
 
     # Hard-negative filter
     jaccard_threshold: float = 0.7
     neg_cosine_proximity: float = 0.85
-    min_hard_negatives: int = 4
+    min_hard_negatives: int = 2  # lowered from 4 to reduce cascading rejection
 
     # Training
-    batch_size: int = 8192
-    lr: float = 5e-4
+    batch_size: int = 2048
+    lr: float = 5e-5
     lr_logit_scale: float = 5e-5
     weight_decay: float = 0.1
     warmup_steps: int = 500

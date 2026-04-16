@@ -46,7 +46,7 @@ def main():
     parser.add_argument("--num-samples", type=int, default=2000, help="Number of images to sample for calibration")
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--top-k", type=int, default=17)
-    parser.add_argument("--top1-percentile", type=int, default=50)
+    parser.add_argument("--top1-percentile", type=int, default=40)
     parser.add_argument("--margin-percentile", type=int, default=40)
     parser.add_argument("--output", type=Path, default=Path("logs/self_train/thresholds.json"))
     parser.add_argument("--device", default="cuda")

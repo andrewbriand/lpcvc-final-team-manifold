@@ -232,9 +232,12 @@ def train(config: SelfTrainConfig) -> None:
                 continue
             top1_scores = scores[:, 0]
             top2_scores = scores[:, 1]
+            # Research-backed: single threshold outperforms dual-gate
+            # (SPF 2025, FixMatch ablations). Margin filter optional.
+            effective_margin = config.min_margin if config.use_margin_filter else 0.0
             keep_mask = apply_confidence_filter(
                 top1_scores, top2_scores,
-                config.min_top1_cosine, config.min_margin,
+                config.min_top1_cosine, effective_margin,
             )
             keep_indices = np.where(keep_mask)[0]
 
@@ -432,14 +435,17 @@ def main():
     parser.add_argument("--num-shards", type=int, default=10)
     parser.add_argument("--faiss-index", type=Path, default=Path("data/cc12m_faiss.index"))
     parser.add_argument("--caption-map", type=Path, default=Path("data/cc12m_captions.npz"))
-    parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--batch-size", type=int, default=8192)
-    parser.add_argument("--lr", type=float, default=5e-4)
-    parser.add_argument("--lr-logit-scale", type=float, default=5e-5)
+    parser.add_argument("--epochs", type=int, default=15)
+    parser.add_argument("--batch-size", type=int, default=2048)
+    parser.add_argument("--lr", type=float, default=5e-5)
+    parser.add_argument("--lr-logit-scale", type=float, default=5e-6)
     parser.add_argument("--lora-rank", type=int, default=8)
     parser.add_argument("--lora-alpha", type=int, default=16)
-    parser.add_argument("--warmup-steps", type=int, default=500)
+    parser.add_argument("--warmup-steps", type=int, default=200)
     parser.add_argument("--top-k", type=int, default=17)
+    parser.add_argument("--use-margin-filter", action="store_true",
+                        help="Enable margin filter (disabled by default per SPF 2025)")
+    parser.add_argument("--min-hard-negatives", type=int, default=2)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--checkpoint-dir", type=Path, default=Path("checkpoints/self_train"))
     parser.add_argument("--log-dir", type=Path, default=Path("logs/self_train"))
@@ -462,6 +468,8 @@ def main():
         max_epochs=args.epochs,
         first_run_epochs=args.epochs,
         top_k=args.top_k,
+        use_margin_filter=args.use_margin_filter,
+        min_hard_negatives=args.min_hard_negatives,
         eval_datasets=args.eval_datasets,
         checkpoint_dir=args.checkpoint_dir,
         log_dir=args.log_dir,
