@@ -24,6 +24,7 @@ through the sample set.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import types
@@ -116,6 +117,40 @@ class FgClip2TextEncoder(nn.Module):
         return feats / feats.norm(dim=-1, keepdim=True).clamp(min=1e-6)
 
 
+def _write_export_manifest(out_dir: str, model_key: str, hf_repo: str) -> None:
+    manifest = {
+        "contract_version": "lpcvc-track1-contract-v1",
+        "pipeline_version": "qai-eval-pipeline-v2",
+        "model_key": model_key,
+        "loader": "fgclip2_hf",
+        "hf_repo": hf_repo,
+        "pretrained": None,
+        "native_size": CONTRACT_IMAGE_SIZE,
+        "image_shape": [1, 3, CONTRACT_IMAGE_SIZE, CONTRACT_IMAGE_SIZE],
+        "text_shape": [1, CONTRACT_TEXT_LEN],
+        "image_onnx": os.path.abspath(os.path.join(out_dir, "image_encoder.onnx")),
+        "text_onnx": os.path.abspath(os.path.join(out_dir, "text_encoder.onnx")),
+        "pipeline": {
+            "version": "qai-eval-pipeline-v2",
+            "model_key": model_key,
+            "submission_contract_version": "lpcvc-track1-contract-v1",
+            "image_shape": [1, 3, CONTRACT_IMAGE_SIZE, CONTRACT_IMAGE_SIZE],
+            "image_dtype": "float32",
+            "text_shape": [1, CONTRACT_TEXT_LEN],
+            "upload_text_dtype": "int32",
+            "compile_text_dtype": "int64",
+            "tokenizer_id": "openai/clip-vit-base-patch32",
+            "native_size": CONTRACT_IMAGE_SIZE,
+            "loader": "fgclip2_hf",
+            "notes": "FG-CLIP2 with in-graph 224->256 resize + short-mode text head (77->64).",
+        },
+    }
+    path = os.path.join(out_dir, "export_manifest.json")
+    with open(path, "w") as f:
+        json.dump(manifest, f, indent=2)
+    print(f"Wrote {path}")
+
+
 def export_module(
     module: nn.Module,
     dummy: torch.Tensor,
@@ -165,6 +200,7 @@ def main() -> None:
 
     if args.skip_text:
         print("Skipping text encoder (--skip-text).")
+        _write_export_manifest(out_dir, args.model_key, spec.hf_repo)
         return
 
     text_encoder = FgClip2TextEncoder(model).eval()
@@ -176,6 +212,7 @@ def main() -> None:
     export_module(text_encoder, dummy_text, text_onnx, "text", "text_embedding")
     print(f"  size: {os.path.getsize(text_onnx) / 1e6:.1f} MB")
 
+    _write_export_manifest(out_dir, args.model_key, spec.hf_repo)
     print(f"\nDone. ONNX written to {out_dir}/")
 
 
