@@ -31,6 +31,12 @@ class ModelSpec:
     hf_repo: str | None = None
     hf_base_model: str | None = None
     text_max_length: int = 77
+    # Path to a retokenizer checkpoint, used by ``fgclip2_retokenized_hf``.
+    # ``None`` means the loader will refuse to load.
+    retokenizer_checkpoint: str | None = None
+    # Path to a Schall Stage 1 PEFT LoRA adapter dir to apply to the FG-CLIP 2
+    # image trunk before retokenizer wrapping. ``None`` means no adapter.
+    schall_stage1_adapter: str | None = None
 
 
 @dataclass(frozen=True)
@@ -60,8 +66,8 @@ MODELS: dict[str, ModelSpec] = {
     "mobileclip2_s2": ModelSpec("MobileCLIP2-S2", "dfndr2b", 256, "v2 ~55M"),
     "mobileclip2_s3": ModelSpec("MobileCLIP2-S3", "dfndr2b", 256, "v2 ~70M"),
     "mobileclip2_s4": ModelSpec("MobileCLIP2-S4", "dfndr2b", 256, "v2 ~90M, best accuracy"),
-    "mobileclip2_b": ModelSpec("MobileCLIP2-B", "dfndr2b", 256, "v2 ~110M"),
-    "mobileclip2_l14": ModelSpec("MobileCLIP2-L-14", "dfndr2b", 256, "v2 ~160M, largest"),
+    "mobileclip2_b": ModelSpec("MobileCLIP2-B", "dfndr2b", 224, "v2 ~110M, ViT-B/16 native 224"),
+    "mobileclip2_l14": ModelSpec("MobileCLIP2-L-14", "dfndr2b", 224, "v2 ~160M, largest"),
     "vit_b16": ModelSpec("ViT-B-16", "openai", 224, "OpenAI CLIP ViT-B/16, ~150M"),
     "vit_l14": ModelSpec("ViT-L-14", "openai", 224, "OpenAI CLIP ViT-L/14, ~428M"),
     "tripletclip_cc12m": ModelSpec(
@@ -227,6 +233,20 @@ MODELS: dict[str, ModelSpec] = {
         hf_repo="qihoo360/fg-clip2-so400m",
         text_max_length=196,
     ),
+    "fgclip2_base_retokenized": ModelSpec(
+        open_clip_name=None,
+        pretrained=None,
+        native_size=224,
+        notes=(
+            "FG-CLIP2 base wrapped with a learned BPE retokenizer. Consumes "
+            "(1, 77) OpenAI CLIP BPE tokens (LPCVC contract); the wrapper "
+            "truncates to 64 internally and runs the trunk in walk_type='short'."
+        ),
+        loader="fgclip2_retokenized_hf",
+        hf_repo="qihoo360/fg-clip2-base",
+        text_max_length=77,
+        retokenizer_checkpoint=None,  # set per-run via override
+    ),
 }
 
 DEFAULT_MODEL = "mobileclip2_s2"
@@ -246,6 +266,10 @@ def resolve_tokenizer_id(model_key: str) -> str:
         if not spec.hf_repo:
             raise RuntimeError(f"FG-CLIP2 model spec is missing hf_repo: {model_key}")
         return spec.hf_repo
+    if spec.loader == "fgclip2_retokenized_hf":
+        # Retokenized variant intentionally uses the OpenAI CLIP BPE tokenizer
+        # (LPCVC contract), not FG-CLIP2's native Gemma tokenizer.
+        return TOKENIZER_ID
     return TOKENIZER_ID
 
 

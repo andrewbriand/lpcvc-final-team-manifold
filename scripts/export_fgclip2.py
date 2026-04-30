@@ -117,6 +117,27 @@ class FgClip2TextEncoder(nn.Module):
         return feats / feats.norm(dim=-1, keepdim=True).clamp(min=1e-6)
 
 
+class FgClip2RetokenizedTextEncoder(nn.Module):
+    """Export-time text encoder for the OpenAI BPE retokenizer.
+
+    Wraps a trained ``FgClip2Retokenizer`` (from ``self_training.retokenizer_model``)
+    so the ONNX graph mirrors what was trained: contract input is (1, 77) int64
+    OpenAI CLIP BPE tokens, truncated internally to (1, 64), pushed through the
+    new (49408, hidden) embedding + new (64, hidden) position embedding +
+    optional adapter + frozen FG-CLIP 2 short-mode text trunk. Output is L2-
+    normalized (B, projection_dim) text features.
+    """
+
+    def __init__(self, retokenizer: nn.Module):
+        super().__init__()
+        # ``FgClip2Retokenizer`` already L2-normalizes its output and slices
+        # input_ids to 64 internally, so we just delegate.
+        self.retokenizer = retokenizer
+
+    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+        return self.retokenizer(input_ids.to(torch.int64))
+
+
 def _write_export_manifest(out_dir: str, model_key: str, hf_repo: str) -> None:
     manifest = {
         "contract_version": "lpcvc-track1-contract-v1",
@@ -174,6 +195,34 @@ def main() -> None:
     parser.add_argument("--out-dir", default=None)
     parser.add_argument("--skip-text", action="store_true",
                         help="Export image encoder only (text wrapper still WIP)")
+    parser.add_argument(
+        "--retokenizer-checkpoint",
+        default=None,
+        help=(
+            "Path to a trained retokenizer checkpoint (best.pt). When set, "
+            "the text encoder is exported with a new (49408, hidden) embedding "
+            "table + (64, hidden) position embedding + optional adapter "
+            "loaded from the checkpoint. The image encoder export is unchanged."
+        ),
+    )
+    parser.add_argument(
+        "--skip-image",
+        action="store_true",
+        help=(
+            "Skip image encoder export. Useful when the image_encoder.onnx is "
+            "already present (the retokenizer never changes the image path)."
+        ),
+    )
+    parser.add_argument(
+        "--schall-stage1-adapter",
+        default=None,
+        help=(
+            "Path to a Schall Stage 1 PEFT LoRA adapter dir. When set, the "
+            "image trunk is loaded with the adapter applied + merged into the "
+            "base weights via merge_and_unload(). Image ONNX export then "
+            "captures the merged weights."
+        ),
+    )
     args = parser.parse_args()
 
     from transformers import AutoModelForCausalLM
@@ -187,28 +236,72 @@ def main() -> None:
     _patch_fgclip2_text_embeddings(model)
     _patch_vision_embeddings_identity(model)
 
+    if args.schall_stage1_adapter:
+        from peft import PeftModel
+        print(f"Applying Schall Stage 1 LoRA adapter from {args.schall_stage1_adapter}")
+        peft_model = PeftModel.from_pretrained(model, args.schall_stage1_adapter)
+        # Fold LoRA deltas into the base Linear weights and drop the adapter modules
+        # so ONNX export sees a clean graph identical to the pre-LoRA topology.
+        model = peft_model.merge_and_unload()
+        model = model.to(torch.float32).eval()
+        print("Schall Stage 1 LoRA merged into base weights.")
+
     out_dir = args.out_dir or f"exported_onnx_{args.model_key}"
     os.makedirs(out_dir, exist_ok=True)
 
     # Image encoder
-    image_encoder = FgClip2ImageEncoder(model).eval()
-    dummy_image = torch.rand(1, 3, CONTRACT_IMAGE_SIZE, CONTRACT_IMAGE_SIZE)
     image_onnx = os.path.join(out_dir, "image_encoder.onnx")
-    print(f"Exporting image encoder → {image_onnx}")
-    export_module(image_encoder, dummy_image, image_onnx, "image", "embedding")
-    print(f"  size: {os.path.getsize(image_onnx) / 1e6:.1f} MB")
+    if args.skip_image:
+        if not os.path.exists(image_onnx):
+            raise FileNotFoundError(
+                f"--skip-image set but {image_onnx} doesn't exist. "
+                "Either drop the flag or copy the file in first."
+            )
+        print(f"Skipping image encoder (--skip-image). Using {image_onnx}.")
+    else:
+        image_encoder = FgClip2ImageEncoder(model).eval()
+        dummy_image = torch.rand(1, 3, CONTRACT_IMAGE_SIZE, CONTRACT_IMAGE_SIZE)
+        print(f"Exporting image encoder → {image_onnx}")
+        export_module(image_encoder, dummy_image, image_onnx, "image", "embedding")
+        print(f"  size: {os.path.getsize(image_onnx) / 1e6:.1f} MB")
 
     if args.skip_text:
         print("Skipping text encoder (--skip-text).")
         _write_export_manifest(out_dir, args.model_key, spec.hf_repo)
         return
 
-    text_encoder = FgClip2TextEncoder(model).eval()
+    text_onnx = os.path.join(out_dir, "text_encoder.onnx")
     dummy_text = torch.zeros(1, CONTRACT_TEXT_LEN, dtype=torch.int64)
     dummy_text[0, 0] = 49406  # CLIP BOS
     dummy_text[0, 1] = 49407  # CLIP EOS
-    text_onnx = os.path.join(out_dir, "text_encoder.onnx")
-    print(f"Exporting text encoder → {text_onnx}")
+
+    if args.retokenizer_checkpoint:
+        from self_training.retokenizer_model import FgClip2Retokenizer
+
+        ckpt_path = os.path.abspath(args.retokenizer_checkpoint)
+        if not os.path.exists(ckpt_path):
+            raise FileNotFoundError(
+                f"Retokenizer checkpoint not found at {ckpt_path}"
+            )
+        print(f"Loading retokenizer checkpoint: {ckpt_path}")
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        ckpt_cfg = (ckpt.get("trainable_state_dict") or {}).get("config", {})
+        with_adapter = bool(ckpt_cfg.get("with_adapter", False))
+        retokenizer = FgClip2Retokenizer(
+            model, with_adapter=with_adapter
+        ).to("cpu").to(torch.float32).eval()
+        retokenizer.load_trainable_state_dict(ckpt["trainable_state_dict"])
+        # Freeze every param so ONNX export sees a constant graph.
+        for p in retokenizer.parameters():
+            p.requires_grad = False
+        text_encoder = FgClip2RetokenizedTextEncoder(retokenizer).eval()
+        print(
+            f"Exporting retokenized text encoder (with_adapter={with_adapter}) → {text_onnx}"
+        )
+    else:
+        text_encoder = FgClip2TextEncoder(model).eval()
+        print(f"Exporting text encoder → {text_onnx}")
+
     export_module(text_encoder, dummy_text, text_onnx, "text", "text_embedding")
     print(f"  size: {os.path.getsize(text_onnx) / 1e6:.1f} MB")
 

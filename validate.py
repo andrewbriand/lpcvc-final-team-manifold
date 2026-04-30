@@ -171,6 +171,30 @@ class FgClip2Wrapper(torch.nn.Module):
         return self.model.get_text_features(**inputs, walk_type="long")
 
 
+class FgClip2RetokenizedWrapper(torch.nn.Module):
+    """Frozen FG-CLIP2 + learned retokenizer (OpenAI CLIP BPE -> 64-token short mode).
+
+    The retokenizer (``self_training.retokenizer_model.FgClip2Retokenizer``)
+    handles the int64 (B, 77) -> truncate-64 -> new embedding -> trunk path.
+    The image side reuses the unmodified FG-CLIP2 image encoder. We expose
+    encode_image as a dict-input call to match the FG-CLIP2 image preprocessor;
+    encode_text consumes a plain (B, 77) int64 tensor.
+    """
+
+    def __init__(self, retokenizer: torch.nn.Module, core: torch.nn.Module):
+        super().__init__()
+        self.retokenizer = retokenizer
+        self.model = core  # frozen FG-CLIP2 base, used for image features
+        self._lpcvc_image_input = "dict"
+        self._lpcvc_text_input = "tensor"
+
+    def encode_image(self, inputs: dict) -> torch.Tensor:
+        return self.model.get_image_features(**inputs)
+
+    def encode_text(self, input_ids: torch.Tensor) -> torch.Tensor:
+        return self.retokenizer(input_ids)
+
+
 def load_model(model_key: str, device: str):
     spec = MODELS[model_key]
     if spec.loader == "open_clip":
@@ -275,6 +299,67 @@ def load_model(model_key: str, device: str):
             )
 
         return FgClip2Wrapper(base), preprocess, tokenizer
+
+    if spec.loader == "fgclip2_retokenized_hf":
+        from transformers import AutoImageProcessor, AutoModelForCausalLM, CLIPTokenizer
+
+        if not spec.hf_repo:
+            raise RuntimeError(f"FG-CLIP2 retokenized model spec is missing hf_repo: {model_key}")
+        if not spec.retokenizer_checkpoint:
+            raise RuntimeError(
+                f"Model spec '{model_key}' is missing retokenizer_checkpoint. "
+                "Set it before calling load_model."
+            )
+
+        # Frozen FG-CLIP 2 base.
+        print(f"Loading FG-CLIP2 retokenized [{spec.hf_repo}] on {device}")
+        base = AutoModelForCausalLM.from_pretrained(
+            spec.hf_repo, trust_remote_code=True
+        ).to(device).eval()
+        _patch_fgclip2_text_embeddings(base)
+
+        # Optional: apply a Schall Stage 1 LoRA adapter to the image trunk.
+        # The adapter modifies vision-side Linear modules in place (PEFT
+        # wraps them); text path is untouched, so the retokenizer is unaffected.
+        stage1_adapter = getattr(spec, "schall_stage1_adapter", None)
+        if stage1_adapter:
+            from peft import PeftModel
+            print(f"  applying Schall Stage 1 LoRA adapter from {stage1_adapter}")
+            base = PeftModel.from_pretrained(base, stage1_adapter)
+            base.eval()
+
+        # Retokenizer wrapper + checkpoint.
+        from self_training.retokenizer_model import FgClip2Retokenizer
+
+        ckpt = torch.load(spec.retokenizer_checkpoint, map_location=device, weights_only=False)
+        ckpt_cfg = (ckpt.get("trainable_state_dict") or {}).get("config", {})
+        with_adapter = bool(ckpt_cfg.get("with_adapter", False))
+        retokenizer = FgClip2Retokenizer(base, with_adapter=with_adapter).to(device).eval()
+        retokenizer.load_trainable_state_dict(ckpt["trainable_state_dict"])
+
+        # Image processor reused from the base model.
+        image_processor = AutoImageProcessor.from_pretrained(spec.hf_repo, trust_remote_code=True)
+
+        def preprocess(img: Image.Image):
+            pil = img.convert("RGB")
+            m = _fgclip2_max_num_patches(pil)
+            return image_processor(images=pil, max_num_patches=m, return_tensors="pt")
+
+        # OpenAI CLIP BPE tokenizer (LPCVC contract). Pads to 77; the
+        # retokenizer slices internally to 64.
+        tokenizer_impl = CLIPTokenizer.from_pretrained("openai/clip-vit-base-patch32")
+
+        def tokenizer(texts: list[str]) -> torch.Tensor:
+            return tokenizer_impl(
+                texts,
+                padding="max_length",
+                truncation=True,
+                max_length=spec.text_max_length,
+                return_tensors="pt",
+            )["input_ids"].to(torch.long)
+
+        wrapper = FgClip2RetokenizedWrapper(retokenizer=retokenizer, core=base)
+        return wrapper, preprocess, tokenizer
 
     raise ValueError(f"Unsupported model loader: {spec.loader}")
 
@@ -841,6 +926,34 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cache-dir", default=DEFAULT_LOCAL_CACHE, help="Local cache for preprocess/tokens/embeddings")
     parser.add_argument("--disable-cache", action="store_true")
     parser.add_argument("--results-out", default=None)
+    parser.add_argument(
+        "--retokenizer-checkpoint",
+        default=None,
+        help=(
+            "Path to a retokenizer checkpoint .pt; required when --model uses "
+            "the fgclip2_retokenized_hf loader."
+        ),
+    )
+    parser.add_argument(
+        "--fgclip2-fix-resolution",
+        action="store_true",
+        help=(
+            "Wrap the fgclip2_*_hf preprocess with a (IMAGE_WIDTH, IMAGE_HEIGHT) "
+            "BICUBIC resize so local eval matches the deployed (1, 3, 224, 224) "
+            "ONNX contract. Without this flag the FG-CLIP 2 loaders use the "
+            "model's native dynamic-patch preprocessing which over-estimates "
+            "deployed performance by ~0.05 R@10 on COCO."
+        ),
+    )
+    parser.add_argument(
+        "--schall-stage1-adapter",
+        default=None,
+        help=(
+            "Path to a Schall Stage 1 PEFT LoRA adapter dir to apply to the "
+            "FG-CLIP 2 image trunk before evaluation. Combine with "
+            "--retokenizer-checkpoint pointing at a Stage 2 retokenizer."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -856,7 +969,38 @@ def main() -> None:
     dataset_keys = resolve_datasets(args.datasets)
     device = args.device or auto_device()
     spec = MODELS[args.model]
+    if spec.loader == "fgclip2_retokenized_hf" and args.retokenizer_checkpoint:
+        # ModelSpec is frozen; rebuild it with the runtime-supplied checkpoint
+        # and stash it back into the registry so load_model sees it.
+        from dataclasses import replace as _dataclass_replace
+
+        spec = _dataclass_replace(spec, retokenizer_checkpoint=args.retokenizer_checkpoint)
+        MODELS[args.model] = spec
+    if args.schall_stage1_adapter:
+        if spec.loader != "fgclip2_retokenized_hf":
+            raise RuntimeError(
+                "--schall-stage1-adapter requires a model with the "
+                "fgclip2_retokenized_hf loader."
+            )
+        from dataclasses import replace as _dataclass_replace
+
+        spec = _dataclass_replace(spec, schall_stage1_adapter=args.schall_stage1_adapter)
+        MODELS[args.model] = spec
     model, preprocess, tokenizer = load_model(args.model, device)
+
+    if args.fgclip2_fix_resolution and spec.loader in ("fgclip2_hf", "fgclip2_retokenized_hf"):
+        _orig_fgclip2_preprocess = preprocess
+
+        def preprocess(img: Image.Image):  # noqa: F811 - intentional shadow
+            img = img.convert("RGB").resize(
+                (IMAGE_WIDTH, IMAGE_HEIGHT), Image.Resampling.BICUBIC
+            )
+            return _orig_fgclip2_preprocess(img)
+
+        print(
+            f"[fgclip2-fix-resolution] preprocess wrapped to resize -> "
+            f"({IMAGE_WIDTH}, {IMAGE_HEIGHT}) before native FG-CLIP 2 processing"
+        )
 
     preprocess_sig = hashlib.sha1(f"{repr(preprocess)}|{CONTRACT_VERSION}".encode("utf-8")).hexdigest()[:12]
     token_sig = hashlib.sha1(
@@ -866,7 +1010,36 @@ def main() -> None:
     if spec.loader == "siglip_hf":
         model_sig = f"{args.model}|siglip_text_nomask_v1"
     elif spec.loader == "fgclip2_hf":
-        model_sig = f"{args.model}|fgclip2_long196_nativeres_v4"
+        res_tag = "contract224" if args.fgclip2_fix_resolution else "nativeres"
+        model_sig = f"{args.model}|fgclip2_long196_{res_tag}_v4"
+    elif spec.loader == "fgclip2_retokenized_hf":
+        # Force a cache miss vs ``fgclip2_base``: the retokenizer changes the
+        # text path entirely, so cached Gemma-tokenized embeddings would be
+        # silently wrong. Hash the checkpoint into both the token sig and the
+        # model sig.
+        ckpt_path = spec.retokenizer_checkpoint or ""
+        ckpt_hash = ""
+        if ckpt_path and os.path.exists(ckpt_path):
+            h = hashlib.sha1()
+            h.update(os.path.abspath(ckpt_path).encode("utf-8"))
+            st = os.stat(ckpt_path)
+            h.update(f"|{st.st_size}|{st.st_mtime_ns}".encode("utf-8"))
+            ckpt_hash = h.hexdigest()[:12]
+        res_tag = "contract224" if args.fgclip2_fix_resolution else "nativeres"
+        adapter_hash = ""
+        if args.schall_stage1_adapter and os.path.isdir(args.schall_stage1_adapter):
+            h = hashlib.sha1()
+            for fn in sorted(os.listdir(args.schall_stage1_adapter)):
+                fp = os.path.join(args.schall_stage1_adapter, fn)
+                if os.path.isfile(fp):
+                    st = os.stat(fp)
+                    h.update(f"{fn}|{st.st_size}|{st.st_mtime_ns}".encode("utf-8"))
+            adapter_hash = h.hexdigest()[:12]
+        adapter_tag = f"|stage1_{adapter_hash}" if adapter_hash else ""
+        model_sig = f"{args.model}|fgclip2_retokenized_short64_v1|{ckpt_hash}|{res_tag}{adapter_tag}"
+        token_sig = hashlib.sha1(
+            f"{args.model}|fgclip2_retokenized|openai_clip_bpe|{spec.text_max_length}|{ckpt_hash}".encode("utf-8")
+        ).hexdigest()[:12]
     cache = CacheManager(
         root_dir=args.cache_dir,
         enabled=not args.disable_cache,
