@@ -57,3 +57,8 @@ context/
 # macOS
 .DS_Store
 ._*
+
+# Local training scratch / artifact pulls (not committed)
+_a100_artifacts/
+_gh200_pull/
+schall_runs/
