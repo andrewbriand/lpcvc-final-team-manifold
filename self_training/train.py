@@ -113,6 +113,23 @@ def _set_lr(optimizer: torch.optim.Optimizer, lr_schedule: list[float]) -> None:
         group["lr"] = lr
 
 
+def _chunked_encode_image(
+    model, image_tensors: torch.Tensor, chunk_size: int = 256,
+) -> torch.Tensor:
+    """Encode images in chunks to avoid CUDA 32-bit index overflow.
+
+    When batch_size is large (e.g. 2048), passing all images through
+    conv layers at once can exceed 2^31 elements in intermediate tensors,
+    triggering ``canUse32BitIndexMath`` errors.  Chunking avoids this.
+    """
+    if image_tensors.shape[0] <= chunk_size:
+        return model.encode_image(image_tensors)
+    chunks = []
+    for i in range(0, image_tensors.shape[0], chunk_size):
+        chunks.append(model.encode_image(image_tensors[i : i + chunk_size]))
+    return torch.cat(chunks, dim=0)
+
+
 # ---------------------------------------------------------------------------
 # Main training loop
 # ---------------------------------------------------------------------------
@@ -198,7 +215,7 @@ def train(config: SelfTrainConfig) -> None:
 
             with torch.amp.autocast("cuda", dtype=torch.bfloat16):
                 with torch.no_grad():
-                    image_embs = base_model.encode_image(image_tensors)
+                    image_embs = _chunked_encode_image(base_model, image_tensors)
                     image_embs = F.normalize(image_embs.float(), dim=-1)
 
             image_embs_np = image_embs.detach().cpu().numpy().astype(np.float32)
@@ -338,7 +355,7 @@ def train(config: SelfTrainConfig) -> None:
             # --- g) Re-encode images through the trainable model ---
             final_image_tensors = image_tensors[torch.tensor(final_keep, device=device)]
             with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-                trainable_image_embs = base_model.encode_image(final_image_tensors)
+                trainable_image_embs = _chunked_encode_image(base_model, final_image_tensors)
                 trainable_image_embs = F.normalize(trainable_image_embs.float(), dim=-1)
 
             # --- h) Compute loss ---

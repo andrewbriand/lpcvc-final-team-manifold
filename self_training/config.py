@@ -34,9 +34,12 @@ class SelfTrainConfig:
     neg_cosine_proximity: float = 0.85
     min_hard_negatives: int = 2  # lowered from 4 to reduce cascading rejection
 
+    # KL anchor (prevents representation collapse)
+    anchor_weight: float = 1.0  # weight of KL anchor loss vs InfoNCE
+
     # Training
     batch_size: int = 2048
-    lr: float = 5e-5
+    lr: float = 1e-5  # conservative for self-training with pseudo-labels
     lr_logit_scale: float = 5e-5
     weight_decay: float = 0.1
     warmup_steps: int = 500

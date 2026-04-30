@@ -37,7 +37,7 @@ from self_training.config import SelfTrainConfig
 from self_training.eval_harness import run_eval_suite
 from self_training.logger import TrainingLogger
 from self_training.lora_setup import apply_lora
-from self_training.loss import self_train_infonce
+from self_training.loss import combined_loss
 from validate import load_model
 
 
@@ -123,20 +123,18 @@ def _set_lr(optimizer, lr_schedule):
 
 
 def make_param_groups(model, config):
-    lora_params, head_params, scale_params = [], [], []
+    """Build optimizer param groups. logit_scale is frozen (excluded)."""
+    lora_params, head_params = [], []
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        if "logit_scale" in name:
-            scale_params.append(param)
-        elif "lora_" in name:
+        if "lora_" in name:
             lora_params.append(param)
         else:
             head_params.append(param)
     return [
         {"params": lora_params, "lr": config.lr},
         {"params": head_params, "lr": config.lr},
-        {"params": scale_params, "lr": config.lr_logit_scale},
     ]
 
 
@@ -182,7 +180,23 @@ def train_precomputed(config: SelfTrainConfig, precomputed_dir: Path):
     print(f"Pre-computed samples: {len(pc_dataset)}")
     print(f"Unique keys: {len(key_to_pc_idx)}")
 
-    # 4. Optimizer + scheduler
+    # 3b. Frozen teacher for KL anchor loss (prevents representation collapse)
+    # Keep a separate copy of the base model's visual encoder (no LoRA)
+    # to produce "teacher" embeddings the student should stay close to.
+    # Reference: BYOL (Grill 2020), DINO (Caron 2021), EWC-style regularization.
+    print("Creating frozen teacher encoder...")
+    teacher_model, _, _ = load_model(config.model_key, device)
+    teacher_model.eval()
+    for p in teacher_model.parameters():
+        p.requires_grad = False
+
+    # 3c. Freeze logit_scale — pretrained value is already well-calibrated.
+    # Letting it drift caused loss collapse in v1-v4 (scale → 100, softmax saturates).
+    base_model.logit_scale.requires_grad = False
+    frozen_logit_scale = base_model.logit_scale.exp().item()
+    print(f"Frozen logit_scale: {frozen_logit_scale:.2f}")
+
+    # 4. Optimizer + scheduler (logit_scale excluded)
     param_groups = make_param_groups(model, config)
     optimizer = torch.optim.AdamW(param_groups, weight_decay=config.weight_decay)
 
@@ -194,6 +208,7 @@ def train_precomputed(config: SelfTrainConfig, precomputed_dir: Path):
 
     print(f"Steps/epoch: {steps_per_epoch}, total: {total_steps}")
     print(f"Batch size: {config.batch_size}")
+    print(f"Anchor weight: {config.anchor_weight}")
 
     # 5. Training loop — iterate pre-computed data directly
     global_step = 0
@@ -258,26 +273,37 @@ def train_precomputed(config: SelfTrainConfig, precomputed_dir: Path):
             pseudo_t = torch.tensor(pseudo_embs_np, dtype=torch.float32, device=device)
             hard_neg_t = torch.tensor(hard_neg_embs_np, dtype=torch.float32, device=device)
 
-            # Forward pass through LoRA'd visual encoder (gradients flow here)
+            # Forward pass: student (LoRA'd) and teacher (frozen) encoders
             with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-                image_embs = _chunked_encode_image(base_model, image_tensors)
-                image_embs = F.normalize(image_embs.float(), dim=-1)
+                # Student: gradients flow through LoRA
+                student_embs = _chunked_encode_image(base_model, image_tensors)
+                student_embs = F.normalize(student_embs.float(), dim=-1)
 
-            # Loss
-            logit_scale = base_model.logit_scale.exp().clamp(
-                config.logit_scale_clamp[0], math.exp(config.logit_scale_clamp[1]),
+                # Teacher: frozen baseline, no gradients
+                with torch.no_grad():
+                    teacher_embs = _chunked_encode_image(teacher_model, image_tensors)
+                    teacher_embs = F.normalize(teacher_embs.float(), dim=-1)
+
+            # Combined loss: InfoNCE + KL anchor
+            total_loss, infonce_loss, anchor_loss = combined_loss(
+                student_image_embs=student_embs,
+                teacher_image_embs=teacher_embs,
+                original_text_embs=original_t,
+                pseudo_text_embs=pseudo_t,
+                hard_neg_embs=hard_neg_t,
+                logit_scale=frozen_logit_scale,
+                anchor_weight=config.anchor_weight,
             )
-            loss = self_train_infonce(image_embs, original_t, pseudo_t, hard_neg_t, logit_scale)
 
             # Backward
             optimizer.zero_grad()
-            loss.backward()
+            total_loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
-            # LR schedule
+            # LR schedule (only 2 groups now — no logit_scale)
             global_step += 1
-            base_lrs = [config.lr, config.lr, config.lr_logit_scale]
+            base_lrs = [config.lr, config.lr]
             scheduled_lrs = [
                 _cosine_warmup_schedule(global_step, config.warmup_steps, total_steps, lr)
                 for lr in base_lrs
@@ -285,7 +311,7 @@ def train_precomputed(config: SelfTrainConfig, precomputed_dir: Path):
             _set_lr(optimizer, scheduled_lrs)
 
             # Logging
-            step_loss = loss.item()
+            step_loss = total_loss.item()
             epoch_loss_sum += step_loss
             epoch_steps += 1
             epoch_matched += len(matched_img_indices)
