@@ -1,11 +1,30 @@
 # LPCVC 2026 Track 1 — Image-to-Text Retrieval
 
-Lightweight evaluation and submission harness for the [2026 LPCVC Track 1](https://lpcv.ai/2026LPCVC/image-text-retrieval/) competition. Built around MobileCLIP models via `open_clip`.
+Team Manifold's submission harness for [2026 LPCVC Track 1](https://lpcv.ai/2026LPCVC/image-text-retrieval/), the image-to-text retrieval challenge for Qualcomm XR2 Gen 2.
+
+The official [2026 LPCVC winners page](https://lpcv.ai/2026LPCVC/winners/) lists Team Manifold as **3rd Place** for Track 1. This repository keeps the reproducible pipeline, local validation harness, QAI Hub export/compile scripts, and the final public closeout notes.
+
+## Final submission summary
+
+The final submission line used the competition contract in `lpcvc_contract.py`:
+
+| Field | Value |
+|-------|-------|
+| Image input | `float32 (1, 3, 224, 224)` in [0, 1], RGB |
+| Text input | `int32 (1, 77)` — CLIP token IDs at the QNN boundary |
+| Tokenizer | `openai/clip-vit-base-patch32` |
+| Target device | XR2 Gen 2 (Proxy) |
+| Metric | Recall@Top10 |
+| Latency gate | Image + text encoder < 35 ms combined |
+
+The best documented submission lineage in this repo is FG-CLIP2 base with an OpenAI-BPE retokenizer and fixed-224 image-side LoRA adaptation. See [SUBMISSION.md](SUBMISSION.md) for the compile job IDs, artifact policy, smoke-test commands, and closeout notes.
+
+EfficientAI won Track 1. Their public repository describes GELU-to-ReLU MLP reconstruction via layer-by-layer knowledge distillation; we treat that as a useful public technical lesson for future low-power VLM work.
 
 ## Quick start
 
 ```bash
-pip install -r requirements.txt
+python3 -m pip install -r requirements.txt
 ```
 
 Download the [sample dataset](https://drive.google.com/drive/folders/1tTwrehwLtVtMOTjD5beYDC3lcWIfzS5D) and place it at `dataset/` (images + CSVs).
@@ -18,6 +37,31 @@ Run local validation:
 
 That's it. By default this evaluates `mobileclip2_s2` on the LPCVC sample set and prints Recall@1/5/10.
 For retrieval datasets, this harness reports fractional multi-ground-truth recall so local validation stays closer to the LPCVC competition scorer.
+
+## Smoke test
+
+Run FAISS tests in a separate Python process from the Torch/WebDataset tests. On this macOS/Python 3.12 environment, loading FAISS and Torch-backed dependencies in the same process can trip a native OpenMP runtime conflict.
+
+```bash
+python3 -m compileall \
+  lpcvc_contract.py lpcvc_models.py export_onnx.py compile_and_profile.py \
+  upload_dataset.py inference.py validate.py utils self_training scripts
+
+python3 validate.py --list-datasets
+
+python3 upload_dataset.py \
+  --skip-upload \
+  --manifest-out /tmp/lpcvc_upload_smoke_manifest.json
+
+python3 -m pytest tests/test_faiss_index.py -q
+python3 -m pytest tests -q --ignore=tests/test_faiss_index.py
+
+python3 validate.py \
+  --model mobileclip2_s2 \
+  --datasets sample \
+  --batch-size 8 \
+  --results-out /tmp/lpcvc_validate_sample_smoke.csv
+```
 
 ## Validation options
 
@@ -95,17 +139,17 @@ These steps compile and deploy to Qualcomm XR2 Gen 2 via [QAI Hub](https://aihub
 Or run each stage individually:
 
 ```bash
-python export_onnx.py --model mobileclip2_s2
+python3 export_onnx.py --model mobileclip2_s2
 
-python compile_and_profile.py \
+python3 compile_and_profile.py \
   --onnx-dir exported_onnx_mobileclip2_s2 \
   --manifest-out manifests/compile_manifest.json \
   --skip-profile
 
-python upload_dataset.py \
+python3 upload_dataset.py \
   --manifest-out manifests/upload_manifest.json
 
-python inference.py \
+python3 inference.py \
   --compile-manifest manifests/compile_manifest.json \
   --upload-manifest manifests/upload_manifest.json \
   --top-k 10 \
@@ -125,6 +169,7 @@ upload_dataset.py        # upload sample data to QAI Hub
 inference.py             # run QAI Hub inference + Recall@K
 utils/retrieval_eval.py  # shared scoring helpers
 scripts/                 # bash wrappers for common workflows
+self_training/           # LoRA/retokenizer/self-training experiments
 ```
 
 ### Generated (gitignored)
@@ -138,13 +183,6 @@ hf_cache/                # HuggingFace dataset downloads
 dataset/                 # local sample data (download separately)
 ```
 
-## Competition contract
+## Public artifact boundary
 
-| Field | Value |
-|-------|-------|
-| Image input | `float32 (1, 3, 224, 224)` in [0, 1], RGB |
-| Text input | `int32 (1, 77)` — CLIP token IDs |
-| Tokenizer | `openai/clip-vit-base-patch32` |
-| Target device | XR2 Gen 2 (Proxy) |
-| Metric | Recall@Top10 |
-| Latency gate | Image + text encoder < 35 ms combined |
+This final repo intentionally excludes private meeting notes, Discord exports, raw datasets, local caches, credentials, checkpoints, and generated ONNX/QAI Hub artifacts. Generated artifacts are either reproducible from the scripts here or referenced by job/artifact IDs in [SUBMISSION.md](SUBMISSION.md).
