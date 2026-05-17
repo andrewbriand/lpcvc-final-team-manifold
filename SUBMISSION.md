@@ -44,19 +44,39 @@ Later local/compiled probes exist in `manifests/stage*_multipos*`, but generated
 
 ## Methods
 
-FG-CLIP2 does not natively use the `openai/clip-vit-base-patch32` tokenizer required by the LPCVC Track 1 contract. Team Manifold's text path therefore adds a tokenizer-translation wrapper: it accepts the required OpenAI BPE token IDs `(1, 77)`, learns an embedding/adapter representation for the FG-CLIP2 text pathway, truncates to the exported short-mode sequence length, and returns L2-normalized embeddings. The image path keeps the competition input fixed at `(1, 3, 224, 224)`, bakes preprocessing into ONNX, and applies fixed-resolution image-side LoRA adaptation for the documented final submission lineage.
+The final method is tokenizer translation plus fixed-resolution image adaptation.
 
-## Ablations and On-Device Latency
+Text mismatch: LPCVC supplies `openai/clip-vit-base-patch32` token IDs shaped `(B, 77)`, while FG-CLIP2 base expects its native Gemma tokenizer with roughly 256K vocabulary entries and a short-mode text path of length 64. Feeding OpenAI BPE IDs directly into the native FG-CLIP2 embedding table is therefore a vocabulary mismatch, not just a tokenizer setting.
 
-Latency values are XR2 Gen 2 Proxy measurements where available.
+Retokenizer module: `self_training/retokenizer_model.py` wraps a frozen FG-CLIP2 base model. It slices the contract input from `(B, 77)` to `(B, 64)`, replaces the native Gemma token embedding with a trainable OpenAI-BPE embedding table `(49408, hidden_dim)`, and replaces the short-mode position embedding with a trainable `(64, hidden_dim)` table. For FG-CLIP2 base, `hidden_dim` is read from `base_model.config.text_config.hidden_size` and is 768. The optional adapter is a residual `Linear -> GELU -> Linear` MLP at hidden dimension 768; the second linear layer is zero-initialized so the adapter starts near identity. The wrapper then calls the frozen FG-CLIP2 text encoder, final layer norm, projection head, last-token pooling, and L2 normalization.
 
-| Variant | Hidden / expected R@10 | Image ms | Text ms | Total ms | Notes |
-|---------|-------------------------|----------|---------|----------|-------|
-| MobileCLIP2-S2 baseline | 0.5839 hidden snapshot | 13.638 | 4.307 | 17.945 | early Team Manifold baseline from qualified leaderboard snapshot |
-| FG-CLIP2 retokenized run 1 | ~0.61 expected hidden; 0.6429 COCO local before fixed-resolution correction | 18.574 | 5.729 | 24.303 | profile jobs succeeded; under 35 ms latency gate |
-| FG-CLIP2 retokenized + Schall Stage 1 image LoRA | 0.6051 hidden final internal closeout | not re-profiled | not re-profiled | not re-profiled | final compile used `--skip-profile`; compile jobs are documented above |
+Warm start and loss: `self_training/retokenizer_train.py` initializes each OpenAI BPE embedding row by decoding that BPE token, retokenizing the surface string with FG-CLIP2's Gemma tokenizer, and averaging the corresponding Gemma embedding rows. Tokens without a usable Gemma decomposition fall back to the Gemma unknown-token vector. The position table is warm-started from FG-CLIP2's short-mode position embedding. Training uses frozen FG-CLIP2 teacher text features generated from Gemma-tokenized captions with `walk_type="short"` and minimizes:
 
-The main ablation lesson was that fixed-resolution evaluation mattered more than broader model changes: earlier FG-CLIP2 local scores were inflated when validation bypassed the deployed `224x224` contract. Stage 1 image-side LoRA improved the hidden score relative to the retokenized baseline, while later combined changes such as web-caption data, weaker anchoring, expanded LoRA scope, and augmentation regressed.
+```python
+loss = (1.0 - cosine_similarity(student_features, teacher_features)).mean()
+```
+
+Image adaptation: `self_training/schall_stage1.py` then keeps the retokenizer/text side frozen and trains attention-only LoRA adapters on the FG-CLIP2 image trunk at the deployed fixed `224x224` contract. The Stage 1 loss is symmetric image-text InfoNCE against the frozen retokenizer text features plus a KL anchor to the pre-adaptation image embeddings. The documented best Stage 1 run used rank 16, alpha 32, fixed logit scale 20.0, COCO/Flickr image-caption pairs, and fixed-resolution validation.
+
+Export: `scripts/export_fgclip2.py` exports the image encoder with preprocessing baked into ONNX and exports `FgClip2RetokenizedTextEncoder`, which accepts OpenAI BPE token IDs `(1, 77)`, internally slices to 64, runs the trained embedding/position/adapter wrapper plus frozen FG-CLIP2 short-mode trunk, and returns normalized text embeddings.
+
+## Ablation and Latency Table
+
+Latency values are XR2 Gen 2 Proxy measurements where a profile artifact exists. "Not re-profiled" means the run was compiled or evaluated with `--skip-profile`, so this closeout does not claim a fresh device latency for that exact adapter checkpoint.
+
+| Variant | Local Recall@10 | Hidden / qualified Recall@10 | Image ms | Text ms | Total ms | Decision |
+|---------|------------------|-------------------------------|----------|---------|----------|----------|
+| MobileCLIP2-S2 baseline | sample smoke 0.8957 | 0.5839 hidden snapshot | 13.638 | 4.307 | 17.945 | baseline sanity path only |
+| FG-CLIP2 retokenized run 1, before fixed-resolution correction | COCO 0.6429 | 0.586 hidden | 18.574 | 5.729 | 24.303 | under latency gate, but local score was inflated |
+| FG-CLIP2 retokenized, fixed-resolution correction | COCO 0.6117; Flickr30K 0.9820; sample 0.9056 | not submitted as separate corrected entry; hidden ceiling estimated near run 1 | 18.574 | 5.729 | 24.303 | corrected baseline for Stage 1 |
+| FG-CLIP2 retokenized + Schall Stage 1 image LoRA | COCO 0.6218, +0.0101 over fixed-resolution retokenized baseline | 0.6051 hidden closeout, +0.019 over run 1 | not re-profiled | not re-profiled | not re-profiled; graph family previously profiled at 24.303 before LoRA merge | documented final submission lineage |
+| Schall Stage 2 retokenizer realign | COCO 0.6062 | not submitted | not re-profiled | not re-profiled | not re-profiled | rejected; regressed vs Stage 1 |
+| Schall Stage 1 v2 | COCO 0.5482 | not submitted | not re-profiled | not re-profiled | not re-profiled | rejected |
+| Stage 1.5 CC12M anchor=1.0 rank=16 | COCO 0.6013 | not submitted | not re-profiled | not re-profiled | not re-profiled | rejected |
+| Stage 1.5 CC12M anchor=2.0 rank=16 | COCO 0.6016 | not submitted | not re-profiled | not re-profiled | not re-profiled | rejected |
+| Stage 1.5 CC12M anchor=1.0 rank=32 | COCO 0.5925 | not submitted | not re-profiled | not re-profiled | not re-profiled | rejected |
+
+The main ablation lesson was that fixed-resolution evaluation mattered more than broader model changes. Earlier FG-CLIP2 local scores were inflated when validation bypassed the deployed `224x224` contract. Stage 1 image-side LoRA recovered about one local COCO Recall@10 point over the corrected retokenized baseline and improved hidden Recall@10 from 0.586 to 0.6051. Later combined changes such as retokenizer realignment, additional web-caption data, weaker anchoring, expanded rank, and broader training variants regressed.
 
 ## Reproduction Commands
 
@@ -67,12 +87,6 @@ python3 -m pip install -r requirements.txt
 ```
 
 Download the LPCVC sample dataset into `dataset/`.
-
-Run local validation:
-
-```bash
-python3 validate.py --model mobileclip2_s2 --datasets sample
-```
 
 Reproduce the Team Manifold submission-family validation once the private retokenizer and LoRA artifacts are restored:
 
@@ -85,7 +99,28 @@ python3 validate.py \
   --datasets sample
 ```
 
-Export and compile a baseline:
+Export and compile the documented submission family:
+
+```bash
+python3 scripts/export_fgclip2.py \
+  --model-key fgclip2_base \
+  --retokenizer-checkpoint /path/to/retokenizer/best.pt \
+  --schall-stage1-adapter /path/to/schall_stage1/best \
+  --out-dir exported_onnx_fgclip2_schall_stage1
+
+python3 compile_and_profile.py \
+  --onnx-dir exported_onnx_fgclip2_schall_stage1 \
+  --manifest-out manifests/fgclip2_schall_stage1/compile_manifest.json \
+  --skip-profile
+```
+
+Run the baseline sanity check only when verifying install/data/scoring:
+
+```bash
+python3 validate.py --model mobileclip2_s2 --datasets sample
+```
+
+Export and compile the baseline scaffold:
 
 ```bash
 python3 export_onnx.py --model mobileclip2_s2

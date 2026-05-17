@@ -23,9 +23,24 @@ The best documented submission lineage in this repo is FG-CLIP2 base with an Ope
 
 ## Methods
 
-Team Manifold adapted FG-CLIP2 to the LPCVC contract by adding a text-side tokenizer-translation wrapper: the submitted text encoder consumes the required OpenAI CLIP BPE IDs `(1, 77)`, learns a retokenizer/adapter into FG-CLIP2's text space, truncates to the short-mode sequence used by the exported model, and returns normalized embeddings compatible with the image encoder. The image side keeps the competition input contract fixed at `224x224`, bakes preprocessing into ONNX, and uses fixed-resolution image-side LoRA adaptation for the documented final path.
+Team Manifold adapted FG-CLIP2 to the LPCVC contract by adding a text-side tokenizer-translation wrapper. FG-CLIP2 natively uses a Gemma tokenizer and short-mode text length 64, while LPCVC requires OpenAI CLIP BPE IDs shaped `(B, 77)`. The wrapper replaces FG-CLIP2's native token table with a trainable OpenAI-BPE table `(49408, 768)`, replaces the short-mode position table with a trainable `(64, 768)` table, slices the contract input from 77 to 64 tokens, optionally applies a residual `Linear -> GELU -> Linear` adapter, and then runs the frozen FG-CLIP2 short-mode text trunk. The retokenizer was trained against frozen FG-CLIP2 Gemma-tokenized teacher text features with mean `1 - cosine(student, teacher)`. The final documented image side keeps the deployed `224x224` input contract and applies attention-only image LoRA with contrastive retrieval loss plus a KL anchor to the pre-adaptation image embeddings.
 
-## Quick start
+Full reproduction details are in [SUBMISSION.md](SUBMISSION.md).
+
+## Final numbers
+
+These are the documented Team Manifold closeout numbers in this repo. Hidden scores are from the qualified leaderboard / closeout records; latency is XR2 Gen 2 Proxy where a profile artifact exists.
+
+| Variant | Recall@10 | XR2 latency | Status |
+|---------|-----------|-------------|--------|
+| Official LPCVC result | 3rd place | under 35 ms required | public result page |
+| MobileCLIP2-S2 baseline | 0.5839 hidden snapshot | 17.945 ms total: 13.638 image + 4.307 text | baseline only; not the final method |
+| FG-CLIP2 retokenized run 1 | 0.6429 COCO local before fixed-resolution correction; 0.586 hidden | 24.303 ms total: 18.574 image + 5.729 text | under latency gate; local score was inflated by resolution mismatch |
+| FG-CLIP2 fixed-224 + Schall Stage 1 LoRA | 0.6218 COCO local; 0.6051 hidden closeout, +0.019 over run 1 | not re-profiled in final checkout; same graph family was previously profiled at 24.303 ms before LoRA merge | documented final submission lineage |
+
+See [SUBMISSION.md](SUBMISSION.md#ablation-and-latency-table) for the ablation table, including fixed-resolution correction and rejected Stage 1/Stage 2 variants.
+
+## Reproduce the Team Manifold submission
 
 ```bash
 python3 -m pip install -r requirements.txt
@@ -33,16 +48,12 @@ python3 -m pip install -r requirements.txt
 
 Download the [sample dataset](https://drive.google.com/drive/folders/1tTwrehwLtVtMOTjD5beYDC3lcWIfzS5D) and place it at `dataset/` (images + CSVs).
 
-Run local validation:
+Restore the private generated artifacts excluded from Git:
 
-```bash
-./scripts/validate.sh
-```
+- retokenizer checkpoint: `best.pt`
+- Schall Stage 1 image LoRA adapter directory: `stage1_best/` or equivalent
 
-That's it. By default this evaluates `mobileclip2_s2` on the LPCVC sample set and prints Recall@1/5/10.
-For retrieval datasets, this harness reports fractional multi-ground-truth recall so local validation stays closer to the LPCVC competition scorer.
-
-To reproduce the Team Manifold submission lineage once the private artifacts are restored:
+Then run the submission-family validation path:
 
 ```bash
 python3 validate.py \
@@ -52,6 +63,18 @@ python3 validate.py \
   --fgclip2-fix-resolution \
   --datasets sample
 ```
+
+For retrieval datasets, this harness reports fractional multi-ground-truth recall so local validation stays closer to the LPCVC competition scorer.
+
+## Sanity check (baseline)
+
+Use this when you only need to verify install, dataset layout, tokenization, and scoring. It evaluates the MobileCLIP2-S2 baseline and does not reproduce Team Manifold's 3rd-place submission.
+
+```bash
+./scripts/validate.sh
+```
+
+By default this prints Recall@1/5/10 for `mobileclip2_s2` on the LPCVC sample set.
 
 ## Smoke test
 
@@ -121,7 +144,7 @@ Preprocessed tensors, tokens, and embeddings are cached in `.cache/validate/` by
 | `mobileclip_s2` | MobileCLIP-S2 | v1 baseline |
 | `mobileclip_b` | MobileCLIP-B | v1, larger |
 | `mobileclip2_s0` | MobileCLIP2-S0 | v2, smallest |
-| `mobileclip2_s2` | MobileCLIP2-S2 | v2, current submission default |
+| `mobileclip2_s2` | MobileCLIP2-S2 | v2 baseline; default sanity-check model |
 | `mobileclip2_s3` | MobileCLIP2-S3 | v2, ~70M |
 | `mobileclip2_s4` | MobileCLIP2-S4 | v2, strongest |
 | `mobileclip2_b` | MobileCLIP2-B | v2, ~110M |
@@ -141,7 +164,24 @@ SigLIP2 runs are supported in the local validation harness. They use the model-n
 
 These steps compile and deploy to Qualcomm XR2 Gen 2 via [QAI Hub](https://aihub.qualcomm.com). Requires a QAI Hub account.
 
-### Step by step
+### Submission-family export and compile
+
+Once the private artifacts are restored, export the documented Team Manifold lineage with the FG-CLIP2 retokenized text path and merged Stage 1 image LoRA adapter:
+
+```bash
+python3 scripts/export_fgclip2.py \
+  --model-key fgclip2_base \
+  --retokenizer-checkpoint /path/to/retokenizer/best.pt \
+  --schall-stage1-adapter /path/to/schall_stage1/best \
+  --out-dir exported_onnx_fgclip2_schall_stage1
+
+python3 compile_and_profile.py \
+  --onnx-dir exported_onnx_fgclip2_schall_stage1 \
+  --manifest-out manifests/fgclip2_schall_stage1/compile_manifest.json \
+  --skip-profile
+```
+
+### Baseline scaffold
 
 ```bash
 # 1. Export ONNX (image + text encoders with preprocessing baked in)
