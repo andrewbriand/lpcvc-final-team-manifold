@@ -1,10 +1,6 @@
 # LPCVC 2026 Track 1 Submission Closeout
 
-Team Manifold placed **3rd** in LPCVC 2026 Track 1: Image-to-Text Retrieval. The official winners page lists:
-
-- Winner: EfficientAI, Beihang University
-- 2nd Place: mangojump, Chung Yuan Christian University
-- 3rd Place: Team Manifold, Independent Researchers
+Team Manifold placed **3rd** in LPCVC 2026 Track 1: Image-to-Text Retrieval. This file documents Team Manifold's implementation, submission lineage, smoke tests, and public artifact boundary.
 
 Official result page: https://lpcv.ai/2026LPCVC/winners/
 
@@ -138,9 +134,7 @@ Closeout smoke result on 2026-05-16:
 
 The biggest local lesson was that evaluation must exactly match the deployment contract. Earlier FG-CLIP2 validation paths bypassed the fixed 224x224 contract and inflated local retrieval scores.
 
-The strongest public lesson from the winning EfficientAI repository is activation replacement as a trained reconstruction problem: their README describes replacing GELU MLP activations with ReLU by layer-by-layer knowledge distillation, based on APHQ-ViT. That is a better template for future low-power VLM work than untrained activation swaps.
-
-EfficientAI repository: https://github.com/jn12-29/LPCV-Track1-EfficientAI
+The practical closeout lesson is to keep the public repo focused on reproducibility: source code, model contract, exact QAI Hub submission path, and smoke-test evidence. External competitor implementations are outside the scope of this repository.
 
 ## What Is Not In This Repo
 

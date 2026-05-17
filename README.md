@@ -2,7 +2,7 @@
 
 Team Manifold's submission harness for [2026 LPCVC Track 1](https://lpcv.ai/2026LPCVC/image-text-retrieval/), the image-to-text retrieval challenge for Qualcomm XR2 Gen 2.
 
-The official [2026 LPCVC winners page](https://lpcv.ai/2026LPCVC/winners/) lists Team Manifold as **3rd Place** for Track 1. This repository keeps the reproducible pipeline, local validation harness, QAI Hub export/compile scripts, and the final public closeout notes.
+The official [2026 LPCVC results page](https://lpcv.ai/2026LPCVC/winners/) lists Team Manifold as **3rd Place** for Track 1. This repository keeps the reproducible Team Manifold pipeline, local validation harness, QAI Hub export/compile scripts, and final public closeout notes.
 
 ## Final submission summary
 
@@ -18,8 +18,6 @@ The final submission line used the competition contract in `lpcvc_contract.py`:
 | Latency gate | Image + text encoder < 35 ms combined |
 
 The best documented submission lineage in this repo is FG-CLIP2 base with an OpenAI-BPE retokenizer and fixed-224 image-side LoRA adaptation. See [SUBMISSION.md](SUBMISSION.md) for the compile job IDs, artifact policy, smoke-test commands, and closeout notes.
-
-EfficientAI won Track 1. Their public repository describes GELU-to-ReLU MLP reconstruction via layer-by-layer knowledge distillation; we treat that as a useful public technical lesson for future low-power VLM work.
 
 ## Quick start
 
