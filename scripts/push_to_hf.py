@@ -44,6 +44,9 @@ def main():
     parser.add_argument("--private", action="store_true", default=True)
     parser.add_argument("--public", action="store_true", help="Override --private")
     parser.add_argument("--repo-type", default="model", choices=["model", "dataset"])
+    parser.add_argument("--prefix", default="",
+                        help="Optional path prefix in the HF repo, e.g. 'stage3/multipos'. "
+                             "Each src dir is uploaded under <prefix>/<src_dir.name>/.")
     args = parser.parse_args()
 
     token = _load_token()
@@ -72,12 +75,13 @@ def main():
         repo_id, repo_type=args.repo_type, private=private, exist_ok=True, token=token
     )
 
+    prefix = args.prefix.strip("/")
     for src in args.src_dirs:
         src_path = Path(src)
         if not src_path.exists():
             print(f"[push] SKIP missing dir: {src}")
             continue
-        path_in_repo = src_path.name
+        path_in_repo = f"{prefix}/{src_path.name}" if prefix else src_path.name
         print(f"[push] uploading {src_path} -> {repo_id}/{path_in_repo}/")
         upload_folder(
             folder_path=str(src_path),

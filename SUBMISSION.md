@@ -88,13 +88,21 @@ python3 -m pip install -r requirements.txt
 
 Download the LPCVC sample dataset into `dataset/`.
 
-Reproduce the Team Manifold submission-family validation once the private retokenizer and LoRA artifacts are restored:
+Restore the generated artifacts from the public Hugging Face bundle:
+
+https://huggingface.co/jrauvola/lpcvc2026-track1-team-manifold-final
+
+```bash
+python3 scripts/fetch_submission_artifacts.py
+```
+
+Reproduce the Team Manifold submission-family validation:
 
 ```bash
 python3 validate.py \
   --model fgclip2_base_retokenized \
-  --retokenizer-checkpoint /path/to/retokenizer/best.pt \
-  --schall-stage1-adapter /path/to/schall_stage1/best \
+  --retokenizer-checkpoint artifacts/submission/retokenizer/best.pt \
+  --schall-stage1-adapter artifacts/submission/stage1_best \
   --fgclip2-fix-resolution \
   --datasets sample
 ```
@@ -104,8 +112,8 @@ Export and compile the documented submission family:
 ```bash
 python3 scripts/export_fgclip2.py \
   --model-key fgclip2_base \
-  --retokenizer-checkpoint /path/to/retokenizer/best.pt \
-  --schall-stage1-adapter /path/to/schall_stage1/best \
+  --retokenizer-checkpoint artifacts/submission/retokenizer/best.pt \
+  --schall-stage1-adapter artifacts/submission/stage1_best \
   --out-dir exported_onnx_fgclip2_schall_stage1
 
 python3 compile_and_profile.py \

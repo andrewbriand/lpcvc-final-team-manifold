@@ -59,6 +59,7 @@ context/
 ._*
 
 # Local training scratch / artifact pulls (not committed)
+artifacts/
 _a100_artifacts/
 _gh200_pull/
 schall_runs/

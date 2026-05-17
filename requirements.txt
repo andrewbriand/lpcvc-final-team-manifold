@@ -1,18 +1,23 @@
-torch
-torchvision
-open_clip_torch
+torch==2.10.0
+torchvision==0.25.0
+open_clip_torch==3.3.0
 transformers==5.5.0
-numpy
-Pillow
-tqdm
+numpy==2.3.3
+Pillow==12.1.1
+tqdm==4.67.3
+peft==0.18.1
+accelerate==1.12.0
+safetensors==0.7.0
+sentencepiece==0.2.1
+einops==0.8.1
 
 # Manifest + evaluation helpers
-pandas
-qai_hub
-onnx
-datasets
-huggingface_hub
+pandas==3.0.1
+qai-hub==0.45.0
+onnx==1.20.1
+datasets==4.6.0
+huggingface_hub==1.6.0
 
 # Self-training pipeline
-faiss-cpu
-webdataset
+faiss-cpu==1.13.2
+webdataset==1.0.2

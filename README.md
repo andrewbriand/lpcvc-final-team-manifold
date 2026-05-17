@@ -25,6 +25,24 @@ The best documented submission lineage in this repo is FG-CLIP2 base with an Ope
 
 Team Manifold adapted FG-CLIP2 to the LPCVC contract by adding a text-side tokenizer-translation wrapper: the submitted text encoder consumes the required OpenAI CLIP BPE IDs `(1, 77)`, learns a retokenizer/adapter into FG-CLIP2's text space, truncates to the short-mode sequence used by the exported model, and returns normalized embeddings compatible with the image encoder. The image side keeps the competition input contract fixed at `224x224`, bakes preprocessing into ONNX, and uses fixed-resolution image-side LoRA adaptation for the documented final path.
 
+### Retokenizer & training
+
+The interesting failure mode was not the 77-token length; it was the tokenizer and embedding table mismatch. FG-CLIP2 base uses a Gemma-tokenized text path with a roughly 256K-row embedding table and short-mode length 64. LPCVC supplies OpenAI CLIP BPE IDs from a 49,408-token vocabulary. A lookup-only embedding-table translation collapsed local COCO Recall@10 to `0.4177`, below the `0.5144` kill threshold, so the final path used a learned tokenizer-translation module rather than a trivial linear probe.
+
+The answer to the embedding-table question is: the submitted text encoder owns a new trainable OpenAI-BPE token table `(49408, 768)` plus a trainable short-mode position table `(64, 768)`. It slices `(B,77)` to `(B,64)`, optionally applies a residual `Linear -> GELU -> Linear` adapter, then feeds the frozen FG-CLIP2 short-mode text trunk and L2-normalizes the output. The retokenizer was warm-started by decoding each OpenAI BPE token, re-tokenizing that surface string with the FG-CLIP2 Gemma tokenizer, and averaging the corresponding Gemma embedding rows; it was then trained on CC12M captions against frozen FG-CLIP2 Gemma-tokenized teacher features with mean `1 - cosine(student, teacher)`. Moving to FG-CLIP2 Large is not drop-in: the hidden dimension changes from 768 to 1024, so the BPE table and adapter must be retrained.
+
+Training and ablation scripts are intentionally explicit:
+
+| Stage | Script | Data | Rank / epochs | Objective | Result / decision |
+|-------|--------|------|---------------|-----------|-------------------|
+| Retokenizer Run 1 | `self_training/retokenizer_train.py` | 1M CC12M captions | text adapter, 3 epochs | cosine distillation to frozen FG-CLIP2 text teacher | best epoch 2; COCO R@10 `0.6429` before fixed-res correction, `0.6117` after correction |
+| Stage 1 v1 final | `self_training/schall_stage1.py` | COCO + Flickr, about 170K pairs | image LoRA rank 16, alpha 32, 2 epochs | InfoNCE + KL anchor, fixed logit scale 20 | COCO R@10 `0.6218`; hidden R@10 `0.6051` |
+| Stage 1.5 a1 | `scripts/master_stage1_a1_cc12m_anchor1_rank16.sh` | CC12M scale probe | rank 16, anchor 1.0, 2 epochs | same as Stage 1 | COCO R@10 `0.6013`; rejected |
+| Stage 1.5 a2 | `scripts/master_stage1_a2_cc12m_anchor2_rank16.sh` | CC12M scale probe | rank 16, anchor 2.0, 2 epochs | stronger KL anchor | COCO R@10 `0.6016`; rejected |
+| Stage 1.5 a3 | `scripts/master_stage1_a3_cc12m_anchor1_rank32.sh` | CC12M scale probe | rank 32, alpha 64, 2 epochs | higher-capacity LoRA | COCO R@10 `0.5925`; rejected |
+| Stage 1 a4 | `scripts/master_stage1_a4_cocoflickr_5epoch.sh` | COCO + Flickr only | rank 16, anchor 1.0, 5 epochs | longer no-web-data control | run scaffold retained; not the final submission |
+| Stage 3 | `scripts/master_stage3_multipos.sh`, `self_training/schall_stage1_multipos.py` | COCO/Flickr grouped as 5 captions per image | rank 16, anchor 1.0, 2 epochs | multi-positive InfoNCE + KL anchor | artifact retained on HF; not the final submission |
+
 Full reproduction details are in [SUBMISSION.md](SUBMISSION.md).
 
 ## Final numbers
@@ -48,18 +66,21 @@ python3 -m pip install -r requirements.txt
 
 Download the [sample dataset](https://drive.google.com/drive/folders/1tTwrehwLtVtMOTjD5beYDC3lcWIfzS5D) and place it at `dataset/` (images + CSVs).
 
-Restore the private generated artifacts excluded from Git:
+Restore the generated artifacts from the public Hugging Face bundle:
 
-- retokenizer checkpoint: `best.pt`
-- Schall Stage 1 image LoRA adapter directory: `stage1_best/` or equivalent
+https://huggingface.co/jrauvola/lpcvc2026-track1-team-manifold-final
+
+```bash
+python3 scripts/fetch_submission_artifacts.py
+```
 
 Then run the submission-family validation path:
 
 ```bash
 python3 validate.py \
   --model fgclip2_base_retokenized \
-  --retokenizer-checkpoint /path/to/retokenizer/best.pt \
-  --schall-stage1-adapter /path/to/schall_stage1/best \
+  --retokenizer-checkpoint artifacts/submission/retokenizer/best.pt \
+  --schall-stage1-adapter artifacts/submission/stage1_best \
   --fgclip2-fix-resolution \
   --datasets sample
 ```
@@ -166,13 +187,13 @@ These steps compile and deploy to Qualcomm XR2 Gen 2 via [QAI Hub](https://aihub
 
 ### Submission-family export and compile
 
-Once the private artifacts are restored, export the documented Team Manifold lineage with the FG-CLIP2 retokenized text path and merged Stage 1 image LoRA adapter:
+Once the public artifacts are restored with `scripts/fetch_submission_artifacts.py`, export the documented Team Manifold lineage with the FG-CLIP2 retokenized text path and merged Stage 1 image LoRA adapter:
 
 ```bash
 python3 scripts/export_fgclip2.py \
   --model-key fgclip2_base \
-  --retokenizer-checkpoint /path/to/retokenizer/best.pt \
-  --schall-stage1-adapter /path/to/schall_stage1/best \
+  --retokenizer-checkpoint artifacts/submission/retokenizer/best.pt \
+  --schall-stage1-adapter artifacts/submission/stage1_best \
   --out-dir exported_onnx_fgclip2_schall_stage1
 
 python3 compile_and_profile.py \
