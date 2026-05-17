@@ -23,7 +23,7 @@ The best documented submission lineage in this repo is FG-CLIP2 base with an Ope
 
 ## Methods
 
-Team Manifold adapted FG-CLIP2 to the LPCVC contract by adding a text-side tokenizer-translation wrapper. FG-CLIP2 natively uses a Gemma tokenizer and short-mode text length 64, while LPCVC requires OpenAI CLIP BPE IDs shaped `(B, 77)`. The wrapper replaces FG-CLIP2's native token table with a trainable OpenAI-BPE table `(49408, 768)`, replaces the short-mode position table with a trainable `(64, 768)` table, slices the contract input from 77 to 64 tokens, optionally applies a residual `Linear -> GELU -> Linear` adapter, and then runs the frozen FG-CLIP2 short-mode text trunk. The retokenizer was trained against frozen FG-CLIP2 Gemma-tokenized teacher text features with mean `1 - cosine(student, teacher)`. The final documented image side keeps the deployed `224x224` input contract and applies attention-only image LoRA with contrastive retrieval loss plus a KL anchor to the pre-adaptation image embeddings.
+Team Manifold adapted FG-CLIP2 to the LPCVC contract by adding a text-side tokenizer-translation wrapper: the submitted text encoder consumes the required OpenAI CLIP BPE IDs `(1, 77)`, learns a retokenizer/adapter into FG-CLIP2's text space, truncates to the short-mode sequence used by the exported model, and returns normalized embeddings compatible with the image encoder. The image side keeps the competition input contract fixed at `224x224`, bakes preprocessing into ONNX, and uses fixed-resolution image-side LoRA adaptation for the documented final path.
 
 Full reproduction details are in [SUBMISSION.md](SUBMISSION.md).
 
