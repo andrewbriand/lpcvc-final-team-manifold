@@ -4,6 +4,8 @@ Team Manifold's submission harness for [2026 LPCVC Track 1](https://lpcv.ai/2026
 
 The official [2026 LPCVC results page](https://lpcv.ai/2026LPCVC/winners/) lists Team Manifold as **3rd Place** for Track 1. This repository keeps the reproducible Team Manifold pipeline, local validation harness, QAI Hub export/compile scripts, and final public closeout notes.
 
+![Official LPCVC Track 1 result crop showing Team Manifold 3rd Place](assets/lpcvc-2026-track1-team-manifold-result.png)
+
 ## Final submission summary
 
 The final submission line used the competition contract in `lpcvc_contract.py`:
@@ -18,6 +20,10 @@ The final submission line used the competition contract in `lpcvc_contract.py`:
 | Latency gate | Image + text encoder < 35 ms combined |
 
 The best documented submission lineage in this repo is FG-CLIP2 base with an OpenAI-BPE retokenizer and fixed-224 image-side LoRA adaptation. See [SUBMISSION.md](SUBMISSION.md) for the compile job IDs, artifact policy, smoke-test commands, and closeout notes.
+
+## Methods
+
+Team Manifold adapted FG-CLIP2 to the LPCVC contract by adding a text-side tokenizer-translation wrapper: the submitted text encoder consumes the required OpenAI CLIP BPE IDs `(1, 77)`, learns a retokenizer/adapter into FG-CLIP2's text space, truncates to the short-mode sequence used by the exported model, and returns normalized embeddings compatible with the image encoder. The image side keeps the competition input contract fixed at `224x224`, bakes preprocessing into ONNX, and uses fixed-resolution image-side LoRA adaptation for the documented final path.
 
 ## Quick start
 
@@ -35,6 +41,17 @@ Run local validation:
 
 That's it. By default this evaluates `mobileclip2_s2` on the LPCVC sample set and prints Recall@1/5/10.
 For retrieval datasets, this harness reports fractional multi-ground-truth recall so local validation stays closer to the LPCVC competition scorer.
+
+To reproduce the Team Manifold submission lineage once the private artifacts are restored:
+
+```bash
+python3 validate.py \
+  --model fgclip2_base_retokenized \
+  --retokenizer-checkpoint /path/to/retokenizer/best.pt \
+  --schall-stage1-adapter /path/to/schall_stage1/best \
+  --fgclip2-fix-resolution \
+  --datasets sample
+```
 
 ## Smoke test
 
@@ -112,6 +129,9 @@ Preprocessed tensors, tokens, and embeddings are cached in `.cache/validate/` by
 | `vit_b16` | ViT-B/16 | OpenAI CLIP baseline |
 | `vit_l14` | ViT-L/14 | OpenAI CLIP large baseline |
 | `tripletclip_cc12m` | TripletCLIP | ViT-B/32 on CC12M (HF) |
+| `fgclip2_base` | FG-CLIP2 Base | HF model, native tokenizer; experiment baseline |
+| `fgclip2_base_retokenized` | FG-CLIP2 Base + OpenAI-BPE retokenizer | Team Manifold submission-family text wrapper; use with `--retokenizer-checkpoint` |
+| `fgclip2_base_retokenized` + `--schall-stage1-adapter` | FG-CLIP2 Base + retokenizer + image LoRA | Documented final submission lineage |
 | `siglip2_base_224` | SigLIP2 Base | Google SigLIP2 patch16 224 (HF) |
 | `siglip2_giant_256` | SigLIP2 Giant 1B | Google SigLIP2 giant patch16 256 (HF) |
 
@@ -184,3 +204,34 @@ dataset/                 # local sample data (download separately)
 ## Public artifact boundary
 
 This final repo intentionally excludes private meeting notes, Discord exports, raw datasets, local caches, credentials, checkpoints, and generated ONNX/QAI Hub artifacts. Generated artifacts are either reproducible from the scripts here or referenced by job/artifact IDs in [SUBMISSION.md](SUBMISSION.md).
+
+## Citation
+
+If you use this implementation, cite the upstream model families used by Team Manifold:
+
+```bibtex
+@article{xie2025fgclip2,
+  title={FG-CLIP 2: A Bilingual Fine-grained Vision-Language Alignment Model},
+  author={Xie, Chunyu and Wang, Bin and Kong, Fanjing and Li, Jincheng and Liang, Dawei and Ao, Ji and Leng, Dawei and Yin, Yuhui},
+  journal={arXiv preprint arXiv:2510.10921},
+  year={2025}
+}
+
+@inproceedings{vasu2024mobileclip,
+  title={MobileCLIP: Fast Image-Text Models through Multi-Modal Reinforced Training},
+  author={Vasu, Pavan Kumar Anasosalu and Pouransari, Hadi and Faghri, Fartash and Vemulapalli, Raviteja and Tuzel, Oncel},
+  booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition},
+  year={2024}
+}
+
+@article{faghri2025mobileclip2,
+  title={MobileCLIP2: Improving Multi-Modal Reinforced Training},
+  author={Faghri, Fartash and Vasu, Pavan Kumar Anasosalu and Koc, Cem and Shankar, Vaishaal and Toshev, Alexander and Tuzel, Oncel and Pouransari, Hadi},
+  journal={arXiv preprint arXiv:2508.20691},
+  year={2025}
+}
+```
+
+## Contact
+
+For questions about this Team Manifold implementation, open an issue on this repository.
