@@ -1,6 +1,6 @@
 # LPCVC 2026 Track 1 Submission Closeout
 
-Team Manifold placed **3rd** in LPCVC 2026 Track 1: Image-to-Text Retrieval. This file documents Team Manifold's implementation, submission lineage, smoke tests, and public artifact boundary.
+Team Manifold placed **3rd** in LPCVC 2026 Track 1: Image-to-Text Retrieval. This file documents our implementation, submission lineage, smoke tests, and public artifact boundary.
 
 Official result page: https://lpcv.ai/2026LPCVC/winners/
 
@@ -23,9 +23,9 @@ The contract is centralized in `lpcvc_contract.py`.
 
 Do not add an explicit int32-to-int64 Cast node inside the text ONNX graph. QNN handles the int32 boundary conversion through `--truncate_64bit_io`; an in-graph Cast caused earlier QNN inference failures.
 
-## Documented Submission Lineage
+## Final Submitted Implementation
 
-The strongest documented lineage in this repo is:
+Our final submitted implementation was FG-CLIP2 base + OpenAI-BPE retokenizer + fixed-224 image LoRA:
 
 1. FG-CLIP2 base image/text backbone.
 2. OpenAI-BPE retokenizer for the competition text contract.
@@ -50,13 +50,13 @@ Text mismatch: LPCVC supplies `openai/clip-vit-base-patch32` token IDs shaped `(
 
 Retokenizer module: `self_training/retokenizer_model.py` wraps a frozen FG-CLIP2 base model. It slices the contract input from `(B, 77)` to `(B, 64)`, replaces the native Gemma token embedding with a trainable OpenAI-BPE embedding table `(49408, hidden_dim)`, and replaces the short-mode position embedding with a trainable `(64, hidden_dim)` table. For FG-CLIP2 base, `hidden_dim` is read from `base_model.config.text_config.hidden_size` and is 768. The optional adapter is a residual `Linear -> GELU -> Linear` MLP at hidden dimension 768; the second linear layer is zero-initialized so the adapter starts near identity. The wrapper then calls the frozen FG-CLIP2 text encoder, final layer norm, projection head, last-token pooling, and L2 normalization.
 
-Warm start and loss: `self_training/retokenizer_train.py` initializes each OpenAI BPE embedding row by decoding that BPE token, retokenizing the surface string with FG-CLIP2's Gemma tokenizer, and averaging the corresponding Gemma embedding rows. Tokens without a usable Gemma decomposition fall back to the Gemma unknown-token vector. The position table is warm-started from FG-CLIP2's short-mode position embedding. Training uses frozen FG-CLIP2 teacher text features generated from Gemma-tokenized captions with `walk_type="short"` and minimizes:
+Warm start and loss: the public retokenizer artifact record represents the full Run 1 training job. It initializes each OpenAI BPE embedding row by decoding that BPE token, retokenizing the surface string with FG-CLIP2's Gemma tokenizer, and averaging the corresponding Gemma embedding rows. Tokens without a usable Gemma decomposition fall back to the Gemma unknown-token vector. The position table is warm-started from FG-CLIP2's short-mode position embedding. Training uses frozen FG-CLIP2 teacher text features generated from Gemma-tokenized captions with `walk_type="short"` and minimizes:
 
 ```python
 loss = (1.0 - cosine_similarity(student_features, teacher_features)).mean()
 ```
 
-Image adaptation: `self_training/schall_stage1.py` then keeps the retokenizer/text side frozen and trains attention-only LoRA adapters on the FG-CLIP2 image trunk at the deployed fixed `224x224` contract. The Stage 1 loss is symmetric image-text InfoNCE against the frozen retokenizer text features plus a KL anchor to the pre-adaptation image embeddings. The documented best Stage 1 run used rank 16, alpha 32, fixed logit scale 20.0, COCO/Flickr image-caption pairs, and fixed-resolution validation.
+Image adaptation: `self_training/schall_stage1.py` then keeps the retokenizer/text side frozen and trains attention-only LoRA adapters on the FG-CLIP2 image trunk at the deployed fixed `224x224` contract. The Stage 1 loss is symmetric image-text InfoNCE against the frozen retokenizer text features plus an MSE/cosine representation anchor to the pre-adaptation image embeddings. The documented best Stage 1 run used rank 16, alpha 32, fixed logit scale 20.0, 54,014 COCO/Flickr image-caption pairs, and fixed-resolution validation.
 
 Export: `scripts/export_fgclip2.py` exports the image encoder with preprocessing baked into ONNX and exports `FgClip2RetokenizedTextEncoder`, which accepts OpenAI BPE token IDs `(1, 77)`, internally slices to 64, runs the trained embedding/position/adapter wrapper plus frozen FG-CLIP2 short-mode trunk, and returns normalized text embeddings.
 
@@ -69,7 +69,7 @@ Latency values are XR2 Gen 2 Proxy measurements where a profile artifact exists.
 | MobileCLIP2-S2 baseline | sample smoke 0.8957 | 0.5839 hidden snapshot | 13.638 | 4.307 | 17.945 | baseline sanity path only |
 | FG-CLIP2 retokenized run 1, before fixed-resolution correction | COCO 0.6429 | 0.586 hidden | 18.574 | 5.729 | 24.303 | under latency gate, but local score was inflated |
 | FG-CLIP2 retokenized, fixed-resolution correction | COCO 0.6117; Flickr30K 0.9820; sample 0.9056 | not submitted as separate corrected entry; hidden ceiling estimated near run 1 | 18.574 | 5.729 | 24.303 | corrected baseline for Stage 1 |
-| FG-CLIP2 retokenized + Schall Stage 1 image LoRA | COCO 0.6218, +0.0101 over fixed-resolution retokenized baseline | 0.6051 hidden closeout, +0.019 over run 1 | not re-profiled | not re-profiled | not re-profiled; graph family previously profiled at 24.303 before LoRA merge | documented final submission lineage |
+| FG-CLIP2 retokenized + Schall Stage 1 image LoRA | COCO 0.6218, +0.0101 over fixed-resolution retokenized baseline | 0.6051 hidden closeout, +0.019 over run 1 | not re-profiled | not re-profiled | not re-profiled; graph family previously profiled at 24.303 before LoRA merge | our final submitted implementation |
 | Schall Stage 2 retokenizer realign | COCO 0.6062 | not submitted | not re-profiled | not re-profiled | not re-profiled | rejected; regressed vs Stage 1 |
 | Schall Stage 1 v2 | COCO 0.5482 | not submitted | not re-profiled | not re-profiled | not re-profiled | rejected |
 | Stage 1.5 CC12M anchor=1.0 rank=16 | COCO 0.6013 | not submitted | not re-profiled | not re-profiled | not re-profiled | rejected |
@@ -86,7 +86,7 @@ Install:
 python3 -m pip install -r requirements.txt
 ```
 
-Download the LPCVC sample dataset into `dataset/`.
+The LPCVC sample dataset is tracked in `dataset/`.
 
 Restore the generated artifacts from the public Hugging Face bundle:
 
@@ -128,17 +128,6 @@ Run the baseline sanity check only when verifying install/data/scoring:
 python3 validate.py --model mobileclip2_s2 --datasets sample
 ```
 
-Export and compile the baseline scaffold:
-
-```bash
-python3 export_onnx.py --model mobileclip2_s2
-
-python3 compile_and_profile.py \
-  --onnx-dir exported_onnx_mobileclip2_s2 \
-  --manifest-out manifests/compile_manifest.json \
-  --skip-profile
-```
-
 Upload sample data and score QAI Hub inference:
 
 ```bash
@@ -146,7 +135,7 @@ python3 upload_dataset.py \
   --manifest-out manifests/upload_manifest.json
 
 python3 inference.py \
-  --compile-manifest manifests/compile_manifest.json \
+  --compile-manifest manifests/fgclip2_schall_stage1/compile_manifest.json \
   --upload-manifest manifests/upload_manifest.json \
   --top-k 10 \
   --manifest-out manifests/inference_manifest.json
@@ -201,6 +190,7 @@ Closeout smoke result on 2026-05-16:
 - non-FAISS test process: `18 passed`
 - upload dry-run: 56 images and 211 texts, contract shapes matched
 - sample validation smoke: `R@10 = 0.8957`
+- public-artifact submission-family sample smoke: `R@10 = 0.9101`
 
 ## Public Lessons
 
@@ -236,15 +226,3 @@ The practical closeout lesson is to keep the public repo focused on reproducibil
 ## Contact
 
 For questions about this Team Manifold implementation, open an issue on this repository.
-
-## What Is Not In This Repo
-
-The public final repo intentionally excludes:
-
-- private meeting notes and Discord exports
-- speculative private-team commentary
-- raw datasets and downloaded Hugging Face caches
-- credentials, tokens, QAI Hub local state, and machine-specific secrets
-- large generated ONNX, checkpoint, and QAI Hub output files
-
-Generated artifacts should be reproduced from scripts or retrieved from the referenced QAI Hub / Hugging Face artifact records.

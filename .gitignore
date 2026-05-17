@@ -3,8 +3,8 @@ exported_onnx_*/
 *.onnx
 *.onnx.data
 
-# Dataset (download separately)
-dataset/
+# Dataset
+# The LPCVC sample dataset under dataset/ is tracked for reproducible smoke tests.
 
 # QAI Hub manifests and outputs
 manifests/
@@ -40,8 +40,9 @@ venv/
 *.swp
 *~
 
-# Agent/team notes and reference docs (not committed)
-AGENTS.md
+# Private notes and reference docs (not committed)
+meetings/
+discord_thread.md
 docs/
 context/
 
@@ -60,6 +61,5 @@ context/
 
 # Local training scratch / artifact pulls (not committed)
 artifacts/
-_a100_artifacts/
-_gh200_pull/
 schall_runs/
+scripts/_update_results_md_stage3.py

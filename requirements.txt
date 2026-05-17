@@ -21,3 +21,6 @@ huggingface_hub==1.6.0
 # Self-training pipeline
 faiss-cpu==1.13.2
 webdataset==1.0.2
+
+# Tests
+pytest==8.3.3

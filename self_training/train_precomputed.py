@@ -180,7 +180,7 @@ def train_precomputed(config: SelfTrainConfig, precomputed_dir: Path):
     print(f"Pre-computed samples: {len(pc_dataset)}")
     print(f"Unique keys: {len(key_to_pc_idx)}")
 
-    # 3b. Frozen teacher for KL anchor loss (prevents representation collapse)
+    # 3b. Frozen teacher for MSE/cosine anchor loss (prevents collapse)
     # Keep a separate copy of the base model's visual encoder (no LoRA)
     # to produce "teacher" embeddings the student should stay close to.
     # Reference: BYOL (Grill 2020), DINO (Caron 2021), EWC-style regularization.
@@ -284,7 +284,7 @@ def train_precomputed(config: SelfTrainConfig, precomputed_dir: Path):
                     teacher_embs = _chunked_encode_image(teacher_model, image_tensors)
                     teacher_embs = F.normalize(teacher_embs.float(), dim=-1)
 
-            # Combined loss: InfoNCE + KL anchor
+            # Combined loss: InfoNCE + MSE/cosine representation anchor
             total_loss, infonce_loss, anchor_loss = combined_loss(
                 student_image_embs=student_embs,
                 teacher_image_embs=teacher_embs,

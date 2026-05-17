@@ -13,8 +13,8 @@ Design:
   - Trainable: LoRA on FG-CLIP 2 image-trunk attention layers.
   - Data: COCO + Flickr image-caption pairs at fixed 224x224 (the deployed
     contract). CC12M streaming optional; off by default for time.
-  - Loss: InfoNCE (image-text contrastive) + KL anchor (frozen teacher
-    image embeddings, BYOL/DINO-style consistency).
+  - Loss: InfoNCE (image-text contrastive) + MSE/cosine representation
+    anchor (frozen teacher image embeddings, BYOL/DINO-style consistency).
   - Eval: each epoch, dispatch validate.py with --fgclip2-fix-resolution
     on COCO + Flickr test splits using the merged image encoder.
 
@@ -485,7 +485,7 @@ def main():
     for p in retokenizer.parameters():
         p.requires_grad = False
 
-    # ---- Frozen teacher copy of image trunk (for KL anchor)
+    # ---- Frozen teacher copy of image trunk (for representation anchor)
     # We keep the un-LoRA'd base as the teacher implicitly: PEFT applies
     # adapters in-place but preserves the original weights, so teacher
     # forward = disable adapters via PEFT context manager.

@@ -46,13 +46,13 @@ def kl_anchor_loss(
     student_embs: torch.Tensor,
     teacher_embs: torch.Tensor,
 ) -> torch.Tensor:
-    """KL-divergence anchor loss preventing drift from frozen baseline.
+    """MSE representation anchor preventing drift from frozen baseline.
 
     Penalizes the LoRA'd visual encoder for producing embeddings that
     diverge from what the frozen base model would produce on the same
-    images. Uses MSE on L2-normalized embeddings, which is equivalent
-    to (2 - 2*cosine_similarity) and thus a smooth proxy for KL on
-    the embedding distribution.
+    images. The historical function name says ``kl_anchor_loss``, but
+    the implemented objective is MSE on L2-normalized embeddings, which
+    is proportional to cosine distance.
 
     Reference: BYOL (Grill et al. 2020), DINO (Caron et al. 2021)
     use similar representation-level consistency losses to prevent
@@ -77,7 +77,7 @@ def combined_loss(
     logit_scale: float | torch.Tensor = 20.0,
     anchor_weight: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Combined InfoNCE + KL anchor loss.
+    """Combined InfoNCE + MSE/cosine representation anchor loss.
 
     Returns (total_loss, infonce_loss, anchor_loss) for logging.
     """

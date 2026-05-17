@@ -12,8 +12,8 @@ Reference: SupCon (Khosla et al. 2020). The hypothesis is that COCO/Flickr's
 InfoNCE wastes signal — multi-positive should reduce gradient noise.
 
 All other hyperparams (anchor weight 1.0, LoRA rank 16, fixed logit_scale 20.0,
-attn-only LoRA, fixed-224 contract, no augmentation, KL anchor) are unchanged
-from v1.
+attn-only LoRA, fixed-224 contract, no augmentation, MSE/cosine representation
+anchor) are unchanged from v1.
 """
 
 from __future__ import annotations
